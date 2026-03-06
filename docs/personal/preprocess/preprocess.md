@@ -34,7 +34,10 @@ messages : List[Dict]
     "messages" : [
         {"role" : "system", "content" : "너는 유능한 비서야. 사용자의 질문에 친절하고 자세하게 대답해."},
         {"role" : "user", "content" : "임진왜란이 언제 일어났는지 알려줘."},
-        {"role" : "assistant", "content" : "임진왜란은 선조 25년, 기원후 1592년에 발발했습니다."}
+        {"role" : "assistant", "content" : "임진왜란은 선조 25년, 기원후 1592년에 발발했습니다."},
+        {"role" : "user", "content" : "..."},
+        {"role" : "assistant", "content" : "..."},
+        ...
     ]
 
 token_count : int32

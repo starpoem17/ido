@@ -95,7 +95,7 @@
 - 평균 토큰 길이
 - 문자당 토큰 수(`tokens_per_char`)
 - 문장당 토큰 길이 p50/p95/p99
-- encode/decode round-trip 성공률
+- encode/decode round-trip 성공률 (prefix-space aware: `decoded == text` 또는 `decoded == " " + text`)
 - 평가에 사용한 holdout 파일 SHA256
 
 ---
@@ -206,7 +206,7 @@
 4. 해석 기준
 - `tokens_per_char`가 낮을수록 압축 효율이 좋다.
 - `p95/p99`가 지나치게 크면 장문 처리 비효율 가능성이 높다.
-- round-trip 성공률은 `100%`를 목표로 한다.
+- round-trip 성공률(`decoded == text` 또는 `decoded == " " + text` 기준)은 `100%`를 목표로 한다.
 - 지표 임계값은 현재 고정하지 않고 버전 간 비교 지표로 수집한다.
 
 5. 리포트 단위

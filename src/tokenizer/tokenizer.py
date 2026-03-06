@@ -988,9 +988,14 @@ def validate_tokenizer_spec(tokenizer, expected_vocab_size: int) -> None:
             raise RuntimeError(f"unexpected unk token found: {unk_like}")
 
 
+def is_roundtrip_success_prefix_space_aware(text: str, decoded: str) -> bool:
+    return decoded == text or decoded == f" {text}"
+
+
 def evaluate_on_holdout(tokenizer, holdout_path: Path) -> Dict[str, object]:
     overall = MetricsAccumulator()
     by_source: Dict[str, MetricsAccumulator] = {}
+    strict_roundtrip_success = 0
 
     for source, text in progress_iter(
         iter_holdout_rows(holdout_path),
@@ -1002,18 +1007,30 @@ def evaluate_on_holdout(tokenizer, holdout_path: Path) -> Dict[str, object]:
         enc = tokenizer.encode(text)
         token_len = len(enc.ids)
         decoded = tokenizer.decode(enc.ids)
-        roundtrip_ok = decoded == text
+        strict_ok = decoded == text
+        roundtrip_ok = is_roundtrip_success_prefix_space_aware(text, decoded)
+        strict_roundtrip_success += int(strict_ok)
 
         tlen = len(text)
         overall.add(tlen, token_len, roundtrip_ok)
         acc.add(tlen, token_len, roundtrip_ok)
+
+    if overall.count > 0:
+        strict_rate = strict_roundtrip_success / overall.count
+        normalized_rate = overall.roundtrip_success / overall.count
+        delta = normalized_rate - strict_rate
+        log(
+            "round-trip rates: "
+            f"strict={strict_rate:.6f}, "
+            f"prefix_space_aware={normalized_rate:.6f}, "
+            f"delta={delta:.6f}"
+        )
 
     source_metrics = {src: acc.to_metrics() for src, acc in sorted(by_source.items())}
     return {
         "overall": overall.to_metrics(),
         "by_source": source_metrics,
     }
-
 
 def save_tokenizer_artifacts(tokenizer, out_dir: Path) -> None:
     ensure_dir(out_dir)

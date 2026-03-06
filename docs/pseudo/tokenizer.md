@@ -332,7 +332,7 @@
 1. `holdout_fixed_rows`에서 `source`, `text`를 분리한다.
 2. `text`를 encode한다.
 3. 토큰 길이 분포를 수집한다.
-4. decode 후 round-trip 성공률 계산
+4. decode 후 prefix-space aware round-trip 성공률 계산 (`decoded == text` 또는 `decoded == " " + text`)
 5. 지표 계산
 - `mean_tokens_per_text`
 - `mean_tokens_per_char`
