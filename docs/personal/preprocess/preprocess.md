@@ -8,9 +8,10 @@
 데이터 feature 6개
 
 data_type : String
+    원천 데이터 형식 태그(PT/FT 구분용 아님)
     ex)
-    "PT" : PreTrain 사전 학습용 텍스트
-    "FT" : FineTune 사전 학습, 파인튜닝에 모두 적용되는 텍스트
+    "dialog"
+    "text"
 
 source : String
     ex)
@@ -23,13 +24,13 @@ split : String
     "train"
     "val"
 
-content : String 
-    PT용 텍스트. FT일 때는 null
+content : String | null
+    PT 학습 입력으로 사용하는 텍스트
     ex)
     "임진왜란은 1592년 발발했습니다."
 
-messages : List[Dict]
-    FT용 대화 배열
+messages : List[Dict] | null
+    FT 학습 입력으로 사용하는 대화 배열
     ex)
     "messages" : [
         {"role" : "system", "content" : "너는 유능한 비서야. 사용자의 질문에 친절하고 자세하게 대답해."},
@@ -41,30 +42,37 @@ messages : List[Dict]
     ]
 
 token_count : int32
-    토큰화 했을 때 토큰 길이
+    저장 row를 학습 입력으로 직렬화했을 때의 토큰 길이
+    기본 규칙: messages가 있으면 messages 직렬화 기준, 없으면 content 기준
+
+공통 규칙
+1. content와 messages는 둘 다 nullable이지만, 최소 하나는 반드시 채운다.
+2. FT 학습에서는 messages의 content를 사용한다.
+3. PT 학습에서는 content를 사용한다.
+4. 특정 학습 모드에서 필요한 필드가 null인 row는 해당 모드에서만 제외한다.
 
 lance 데이터 예시
 ex)
 {
-    "data_type" : "PT",
+    "data_type" : "dialog",
     "source" : "045.지식검색 대화",
     "split" : "train",
-    "content" : "...",
-    "messages" : null,
-    "token_count" : 123
-}
-
-{
-    "data_type" : "FT",
-    "source" : "045.지식검색 대화",
-    "split" : "val",
-    "content" : null,
+    "content" : "임진왜란이 언제 일어났는지 알려줘. 임진왜란은 선조 25년, 기원후 1592년에 발발했습니다.",
     "messages" : [
         {"role" : "system", "content" : "너는 유능한 비서야. 사용자의 질문에 친절하고 자세하게 대답해."},
         {"role" : "user", "content" : "임진왜란이 언제 일어났는지 알려줘."},
         {"role" : "assistant", "content" : "임진왜란은 선조 25년, 기원후 1592년에 발발했습니다."}
     ],
     "token_count" : 456
+}
+
+{
+    "data_type" : "text",
+    "source" : "novel24",
+    "split" : "train",
+    "content" : "...",
+    "messages" : null,
+    "token_count" : 123
 }
 
 보다 구체적인 데이터 종류별 포맷은 docs/personal/preprocess 안의 md 파일들을 참조하여 확인한다

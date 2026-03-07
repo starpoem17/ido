@@ -25,9 +25,10 @@
 6. `token_count: int32`
 
 강제 규칙:
-- `PT` row는 `content != null`, `messages = null`
-- `FT` row는 `messages != null`, `content = null`
-- 한 row는 `PT` 또는 `FT` 중 하나만 만족해야 한다.
+- `data_type`은 `PT/FT` 구분용이 아니라 원천 형식 태그로 사용한다.
+- `content`와 `messages`는 둘 다 nullable이며, 최소 하나는 반드시 채워야 한다.
+- `FT` 학습은 `messages`를 사용하고, `PT` 학습은 `content`를 사용한다.
+- 특정 학습 모드에서 필요한 필드가 `null`인 row는 그 모드에서만 제외한다.
 - 모든 데이터셋은 동일한 PyArrow schema로 캐스팅 가능해야 한다.
 
 ### 1.2 통합 저장 전략
@@ -65,17 +66,18 @@ data/
 `token_count`는 저장 row 자체가 아니라 실제 학습 입력으로 직렬화한 문자열의 토큰 길이로 계산한다.
 
 공통 규칙:
-- Lance에는 구조화된 `content` 또는 `messages`를 저장한다.
-- `FT` row는 personal 문서 예시대로 `<|system|>`, `<|user|>`, `<|assistant|>`를 붙여 직렬화한다.
-- `PT` row는 데이터셋별 personal 문서에 정의된 concat 규칙으로 직렬화한다.
+- Lance에는 `content`와 `messages`를 함께 저장할 수 있다.
+- `FT` 학습 입력 직렬화는 personal 문서 예시대로 `messages`에 `<|system|>`, `<|user|>`, `<|assistant|>`를 붙인다.
+- `PT` 학습 입력 직렬화는 `content` 문자열을 그대로 사용한다.
+- `token_count`는 `messages`가 있으면 `messages` 직렬화 기준으로, 없으면 `content` 기준으로 계산한다.
 - `<|bos|>`, `<|eos|>`, `<|eot_id|>`는 현재 personal 예시 직렬화에 포함되지 않으므로 기본 전처리 직렬화에는 넣지 않는다.
-- 전처리의 `token_count` 계산 규칙과 학습 로더의 직렬화 규칙은 동일해야 한다.
+- 학습 로더는 위와 동일한 직렬화 규칙을 사용해야 하며, 모드별 길이 기준이 필요하면 로더에서 재계산한다.
 
 ### 1.6 공통 검증 항목
 1. 스키마 검증
 - 컬럼 6개와 타입 일치
 - `split` 허용값 검증
-- `PT/FT` 상호배타 규칙 검증
+- `content/messages` 최소 1개 존재 규칙 검증
 
 2. 수량 검증
 - 입력 레코드 수 대비 출력 row 수, 제외 row 수, 보정 row 수 집계
@@ -103,7 +105,7 @@ manifest 필수 항목:
 - chunk별 bytes/rows
 - source별 rows
 - split별 rows
-- PT/FT rows
+- `content` 보유 rows / `messages` 보유 rows
 
 quality report 필수 항목:
 - 제외 사유별 집계
@@ -144,19 +146,18 @@ quality report 필수 항목:
 - 마지막 `user` 제거 후 assistant 턴이 1개도 없으면 세션 전체 제외
 
 ### 2.5 row 생성 규칙
-- 정규화에 성공한 세션마다 Lance에는 `FT` row만 1개 생성한다.
-- `data_type = FT`
-- `content = null`
+- 정규화에 성공한 세션마다 Lance row를 1개 생성한다.
+- `data_type = "dialog"`
+- `content`는 `PT` 학습용 문자열로 채운다.
 - `messages = [system, user, assistant, ...]`
 - `system` 문장은 personal 문서에 적힌 고정 문구를 그대로 사용한다.
 
-### 2.6 PT 사용 전략
-- 이 계열 데이터의 `PT 시 사용 전략`은 Lance 저장 포맷이 아니라 downstream 학습 직렬화 규칙으로 해석한다.
-- `system`을 제외한 user/assistant `content`를 원순서대로 이어 붙여 `PT` 입력 문자열을 만든다.
+### 2.6 content 생성 규칙 (`PT` 학습 입력)
+- `system`을 제외한 user/assistant `content`를 원순서대로 이어 붙여 `content`를 만든다.
 - 구분자는 단일 공백 `" "`이다.
 
-### 2.7 FT token_count 규칙
-- `FT` row는 `messages`를 특수 토큰 포함 문자열로 직렬화한 뒤 토큰화한다.
+### 2.7 messages 직렬화 및 token_count 규칙 (`FT` 학습 입력)
+- `messages`는 특수 토큰 포함 문자열로 직렬화한 뒤 토큰화한다.
 - 직렬화 순서는 personal 예시대로 `<|system|>...<|user|>...<|assistant|>...`를 따른다.
 - `token_count`에는 특수 토큰도 포함한다.
 
@@ -173,9 +174,9 @@ quality report 필수 항목:
 - `system = "당신은 기술과학 전문 비서입니다. 사용자의 질문에 친절하고 과학적으로 대답합니다."`
 
 ### 3.3 출력 규칙
-- 정규화에 성공한 세션마다 `FT` row 1개 생성
-- `data_type = "FT"`
-- `content = null`
+- 정규화에 성공한 세션마다 row 1개 생성
+- `data_type = "dialog"`
+- `content`는 2.6 규칙으로 생성
 - `messages`는 personal 예시와 같은 role 배열
 
 ---
@@ -192,7 +193,10 @@ quality report 필수 항목:
 
 ### 4.3 출력 규칙
 - 009와 동일한 정규화 규칙을 사용
-- 정규화에 성공한 세션마다 `FT` row 1개 생성
+- 정규화에 성공한 세션마다 row 1개 생성
+- `data_type = "dialog"`
+- `content`는 2.6 규칙으로 생성
+- `messages`는 personal 예시와 같은 role 배열
 
 ---
 
@@ -208,7 +212,10 @@ quality report 필수 항목:
 
 ### 5.3 출력 규칙
 - 009와 동일한 정규화 규칙을 사용
-- 정규화에 성공한 세션마다 `FT` row 1개 생성
+- 정규화에 성공한 세션마다 row 1개 생성
+- `data_type = "dialog"`
+- `content`는 2.6 규칙으로 생성
+- `messages`는 personal 예시와 같은 role 배열
 
 ---
 
@@ -231,22 +238,21 @@ quality report 필수 항목:
 - `system = "당신은 기사를 읽고 제목을 짓습니다. 내용을 요약하고, 사람들의 눈길을 끄는 제목을 작성합니다."`
 
 ### 6.5 row 생성 규칙
-- `title[*]` 항목 하나당 Lance에는 `FT` row만 1개 생성한다.
-- `data_type = "FT"`
-- `content = null`
+- `title[*]` 항목 하나당 Lance row를 1개 생성한다.
+- `data_type = "dialog"`
+- `content`는 6.6 규칙으로 생성한다.
 - `messages = [system, user, assistant]`
 - `user` 텍스트는 `content[*].sentence`를 공백 `" "`으로 이어 붙인 문자열이다.
 - `assistant` 텍스트는 해당 `title[*].sentence`다.
 - 전처리 단계에서는 기사 본문을 자르거나 분할하지 않는다.
 
-### 6.6 PT 사용 전략
-- `PT 시 사용 전략`은 Lance 저장 포맷이 아니라 downstream 학습 직렬화 규칙으로 해석한다.
-- `assistant` 제목을 앞에 두고, `user` 본문을 뒤에 둔다.
+### 6.6 content 생성 규칙 (`PT` 학습 입력)
+- `assistant` 제목을 앞에 두고, `user` 본문을 뒤에 둔 문자열을 `content`로 저장한다.
 - 구분자는 줄바꿈 `\\n` 하나다.
 
 ### 6.7 이상치 규칙
 - `named_entity` 누락 또는 비배열이면 파일 스킵
-- `content`가 비어 있거나 본문 문장이 모두 빈 문자열이면 해당 제목 row 제외
+- 원본 `content[*].sentence`가 비어 있거나 본문 문장이 모두 빈 문자열이면 해당 제목 row 제외
 - `title` 문장이 빈 문자열이면 해당 제목 row 제외
 - 문자열이 아닌 `sentence`는 무효값으로 보고 해당 행에서 제외한 뒤, 최종 본문 또는 제목이 비면 row 제외
 
@@ -260,12 +266,13 @@ quality report 필수 항목:
 
 ### 7.2 split 및 data_type
 - 모든 row는 `split = train`
-- 모든 row는 `data_type = PT`
+- 모든 row는 `data_type = "text"`
 
 ### 7.3 row 단위
 - txt 원문을 `\\n` 단위로 누적하면서 row를 만든다.
 - 누적 결과의 토큰 길이가 `1024`를 넘기기 직전까지만 현재 row에 넣고, 넘기는 줄부터 다음 row로 넘긴다.
 - 문장 중간이나 줄 중간을 자르지 않는다.
+- `content`에는 누적된 본문 문자열을 저장하고, `messages = null`로 둔다.
 
 ### 7.4 source
 - `source = "novel24"`
@@ -275,8 +282,8 @@ quality report 필수 항목:
 ## 8. 구현 순서
 1. `docs/pseudo/preprocess/preprocess.md`에 공통 오케스트레이터, 직렬화, token_count, Lance append 의사코드를 정의한다.
 2. `009`, `010`, `011`은 멀티세션 공통 헬퍼를 공유하는 개별 adapter 의사코드를 작성한다.
-3. `030`은 personal 예시 row 형태대로 `FT` row를 생성하는 기사-제목 adapter 의사코드를 작성한다.
-4. `novel24`는 `PT` 전용 분할 adapter 의사코드를 작성한다.
+3. `030`은 `messages`와 `content`를 함께 채우는 기사-제목 adapter 의사코드를 작성한다.
+4. `novel24`는 `content` 중심 분할 adapter 의사코드를 작성한다.
 5. 구현 시 dataset별 결과를 같은 Lance 저장소에 append한다.
 
 ---
@@ -285,4 +292,4 @@ quality report 필수 항목:
 1. `009`, `010`, `011`, `030`, `novel24`가 모두 personal 문서와 논리적으로 충돌하지 않는다.
 2. 각 데이터셋 의사코드만 보고 바로 구현 가능한 수준으로 입력 경로, row 단위, 직렬화, `token_count`, 품질 규칙이 정의돼 있다.
 3. 모든 데이터셋 결과가 같은 6컬럼 스키마로 append 가능하다.
-4. `FT` 중심 데이터셋과 `PT` 중심 데이터셋이 같은 Lance 저장소에 함께 append 가능하다.
+4. 학습 모드에 따라 `FT`는 `messages`, `PT`는 `content`를 사용해 같은 Lance 저장소를 재활용할 수 있다.
