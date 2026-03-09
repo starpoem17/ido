@@ -7,3 +7,20 @@ docs/pseudo 에는 스도코드를 작성한다. docs/plans를 바탕으로 하�
 파일에 접근할 때는 항상 personal-plans-pseudo-src의 위계질서를 지키며 상위 파일의 지침을 중시한다. 접근 시에도 상위 파일에 먼저 접근한다.
 
 사용자의 허락없이 코드 작성을 시작하지 않는다.
+    사용자의 PC 환경
+        cpu: amd 9800x3d 8코어
+        gpu: rtx5090 32gb. 단일 GPU
+        torch_cuda_arch_list=12.0
+        dram: 32gb + nvme ssd swap 32gb
+        os: ubuntu 24.04
+        torch: 2.10.0
+        cuda: 13.0
+        nvidia driver: 580.95.05
+        cudnn: 9.18.0
+        uv로 파이썬 라이브러리 관리
+    
+    accelerate 라이브러리로 bf16을 활용하여 모델 훈련
+
+    코드 작성 시에는 cpu 8코어 물리 코어를 적극 활용하도록 멀티프로세싱 코드를 작성, 혹은 단일 GPU를 최대한 활용할 수 있도록 병렬 연산 친화적으로 코드를 작성한다.
+    CPU와 GPU 메모리 이동을 최소화하여 메모리 오버헤드를 줄이는 코드를 작성한다.
+    flash attn을 강제 활성화하도록 코드를 작성한다.

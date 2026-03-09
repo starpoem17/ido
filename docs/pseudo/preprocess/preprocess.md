@@ -5,35 +5,33 @@
 데이터셋별 차이는 각 개별 pseudo 문서에서 정의하고, 여기서는 공통 스키마, 직렬화, token_count, Lance append 절차만 고정한다.
 
 ## 공통 스키마
-최종 row는 항상 아래 6개 컬럼만 가진다.
+최종 row는 항상 아래 5개 feature만 가진다.
 
-1. `data_type`
-2. `source`
-3. `split`
-4. `content`
-5. `messages`
-6. `token_count`
+1. `source`
+2. `split`
+3. `content`
+4. `messages`
+5. `token_count`
 
 구현할 때는 다음을 강제한다.
 
-1. `PT` row라면 `content`는 문자열이고 `messages`는 `null`이어야 한다.
-2. `FT` row라면 `content`는 `null`이고 `messages`는 role-content 구조의 배열이어야 한다.
-3. `split`은 `train` 또는 `val`만 허용한다.
-4. 모든 row는 같은 PyArrow schema로 캐스팅 가능해야 한다.
+1. `content`와 `messages`는 둘 다 nullable이지만 최소 하나는 반드시 채운다.
+2. `split`은 `train` 또는 `val`만 허용한다.
+3. 모든 row는 같은 PyArrow schema로 캐스팅 가능해야 한다.
 
 ## 공통 직렬화 규칙
 `token_count`는 저장된 row를 실제 학습 입력 문자열로 바꾼 뒤 계산한다.
 
-1. `PT` row는 `content` 문자열 자체를 학습 입력으로 본다.
-2. `FT` row는 `messages`를 personal 예시와 같은 순서로 직렬화한다.
-3. `FT` 직렬화에서는 각 role 앞에 `<|system|>`, `<|user|>`, `<|assistant|>`를 붙인다.
+1. `messages`가 있으면 `messages`를 personal 예시와 같은 순서로 직렬화한다.
+2. `messages` 직렬화에서는 각 role 앞에 `<|system|>`, `<|user|>`, `<|assistant|>`를 붙인다.
+3. `messages`가 없고 `content`만 있으면 `content` 문자열 자체를 학습 입력으로 본다.
 4. 현재 personal 예시에는 `<|bos|>`, `<|eos|>`, `<|eot_id|>`가 등장하지 않으므로 전처리 단계 기본 직렬화에는 넣지 않는다.
 
 ## token_count 계산 절차
 구현할 때는 아래 순서로 처리한다.
 
 1. 실행 시작 시 `data/tokenizers/korean_bbpe_v1/tokenizer.json`을 한 번만 로드한다.
-2. row를 `PT` 또는 `FT` 규칙에 따라 문자열로 직렬화한다.
+2. row를 위 공통 직렬화 규칙에 따라 문자열로 직렬화한다.
 3. 직렬화된 문자열을 토크나이저로 인코딩한다.
 4. 인코딩 결과 토큰 수를 `token_count`에 넣는다.
 5. 저장 직전에 한 번 더 같은 규칙으로 재계산해 `token_count`와 일치하는지 확인한다.
@@ -82,7 +80,7 @@
 1. chunk별 경로, row 수, 바이트 수를 집계한다.
 2. source별 row 수를 집계한다.
 3. split별 row 수를 집계한다.
-4. `PT` row 수와 `FT` row 수를 집계한다.
+4. `content` 보유 row 수와 `messages` 보유 row 수를 집계한다.
 5. `schema_version`과 `token_count_version`을 manifest에 기록한다.
 6. 품질 이벤트를 사유별로 집계한다.
 7. 품질 이벤트 샘플을 사유별 최대 20건 저장한다.
@@ -92,8 +90,8 @@
 ## 최종 검증
 구현이 끝난 뒤에는 아래를 확인한다.
 
-1. 모든 row가 6개 컬럼만 사용하는가
-2. `PT` row와 `FT` row의 null 규칙이 지켜지는가
+1. 모든 row가 5개 feature만 사용하는가
+2. 모든 row에서 `content/messages` 중 최소 하나가 채워져 있는가
 3. `token_count`가 직렬화 재계산 결과와 일치하는가
 4. chunk별 row 수 합계와 전체 row 수가 일치하는가
 5. manifest 집계와 quality report 집계가 서로 모순되지 않는가

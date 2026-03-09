@@ -5,13 +5,7 @@
 <|eot_id|> : end of turn. 전체 종료X. 한 화자의 발언 종료.
 <|pad|> : 배치 내에서 가장 긴 텍스트의 길이에 맞춰 짧은 텍스트의 빈 공간 패딩. 학습 시에는 짧은 문장의 오른쪽을 패딩한다. 이후 추론 서비스 시에는 왼쪽을 패딩한다(다수 사용자의 쿼리를 동시 처리할 때)
 
-데이터 feature 6개
-
-data_type : String
-    원천 데이터 형식 태그(PT/FT 구분용 아님)
-    ex)
-    "dialog"
-    "text"
+데이터 feature 5개
 
 source : String
     ex)
@@ -54,7 +48,6 @@ token_count : int32
 lance 데이터 예시
 ex)
 {
-    "data_type" : "dialog",
     "source" : "045.지식검색 대화",
     "split" : "train",
     "content" : "임진왜란이 언제 일어났는지 알려줘. 임진왜란은 선조 25년, 기원후 1592년에 발발했습니다.",
@@ -67,7 +60,6 @@ ex)
 }
 
 {
-    "data_type" : "text",
     "source" : "novel24",
     "split" : "train",
     "content" : "...",
