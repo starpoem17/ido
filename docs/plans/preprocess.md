@@ -248,7 +248,19 @@ quality report 필수 항목:
 - `content`는 system 제외 user/assistant text 공백 결합이다.
 - `topicInfo`, `summary`, `date/time`은 사용하지 않는다.
 
-## 14. novel24
+## 14. gsm8k
+- 입력은 `data/korean_raw/gsm8k/train-00000-of-00001.parquet`, `data/korean_raw/gsm8k/test-00000-of-00001.parquet`다.
+- split 매핑은 `train parquet -> train`, `test parquet -> val`로 둔다.
+- 원본 row 단위는 parquet row 1개다.
+- `question`은 문제, `answer`는 풀이와 정답으로 사용한다.
+- `messages = [system, user(question), assistant(answer)]`
+- `content = question + "\n" + answer`
+- `question`, `answer`에는 strip을 적용한다.
+- strip 후 `question` 또는 `answer`가 비면 해당 row는 제외한다.
+- `question_en`, `answer_en`는 기본 학습 입력에서 사용하지 않는다.
+- `system = "당신은 수학 문제를 입력받으면 문제 풀이 과정을 포함하여 정답을 출력합니다."`
+
+## 15. novel24
 - 입력은 `data/korean_raw/novel24/*.txt`다.
 - 숨김 파일과 `.DS_Store`는 제외한다.
 - txt 파일 묶음을 안정적인 순서로 정렬한 뒤 앞 90%를 train, 뒤 10%를 val로 나눈다.
@@ -260,14 +272,14 @@ quality report 필수 항목:
 
 ---
 
-## 15. 구현 순서
+## 16. 구현 순서
 1. 공통 스키마, 직렬화, `token_count`, Lance append 절차를 구현한다.
 2. `009/010/011/141` 멀티세션 계열 adapter를 구현한다.
-3. `019/020/021/023/030/045/046` adapter를 dataset별 규칙에 맞게 구현한다.
+3. `019/020/021/023/030/045/046/gsm8k` adapter를 dataset별 규칙에 맞게 구현한다.
 4. `novel24` txt 분할 adapter를 구현한다.
 5. dataset별 결과를 같은 Lance 저장소에 append한다.
 
-## 16. 수용 기준
+## 17. 수용 기준
 1. 모든 dataset 계획이 최신 personal 문서와 논리적으로 충돌하지 않는다.
 2. 각 데이터셋 규칙만 보고 입력 경로, row 단위, `content/messages`, `token_count`, 품질 규칙을 바로 구현할 수 있다.
 3. 모든 데이터셋 결과가 같은 5-feature 스키마로 append 가능하다.
