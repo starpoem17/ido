@@ -17,8 +17,8 @@ from src.preprocess.runner import run_stage_entrypoint
 OUTPUT_ROOT = Path("data/korean_processed/_staging")
 TARGET_SPLITS = ("train", "val")
 WORKERS = 7
-SHARD_ROW_LIMIT = 1000
-OVERWRITE_OUTPUT = False
+SHARD_ROW_LIMIT = 50000
+OVERWRITE_OUTPUT = True
 LIMIT_FILES = None
 ENABLE_TQDM = True
 ENABLE_DEBUG_LOG = True
