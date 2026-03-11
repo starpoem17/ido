@@ -182,10 +182,11 @@ quality report 필수 항목:
 
 ## 7. 020.주제별 텍스트 일상 대화 데이터
 - 원본 JSON의 `info[*]`가 row 단위다.
-- `annotations.speaker_type == "1:1"`인 레코드만 사용한다.
+- `annotations.speaker_type == "1:1"`이면 FT용 `messages`를 만든다. `다자간 대화`와 third speaker 케이스는 PT-only row로 salvage한다.
 - turn text는 `norm_text` 우선, 없으면 `text`를 사용하고 `"1 : "` 같은 화자 접두어는 제거한다.
 - turn 순서대로 처음 등장한 `speaker.id`를 user, 다음 등장한 다른 `speaker.id`를 assistant로 매핑한다.
-- 세 번째 화자가 나오면 제외한다.
+- `speaker_type=다자간 대화`이면 FT용 `messages`는 만들지 않고, 유효한 turn text를 이어붙인 `content`와 `messages = null` PT-only row로 salvage한다.
+- 세 번째 화자가 나오면 FT용 `messages`는 만들지 않고, 유효한 turn text를 이어붙인 `content`와 `messages = null` PT-only row로 salvage한다.
 - 연속 같은 화자 turn은 공백 하나로 병합한다.
 - 마지막 turn이 user면 마지막 user turn 하나를 제거한다.
 - `messages = [system, user, assistant, ...]`

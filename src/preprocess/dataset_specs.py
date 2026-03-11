@@ -746,19 +746,68 @@ def _process_020(
                 severity="skip",
             )
             continue
-        if annotations.get("speaker_type") != "1:1":
-            recorder.add(
+        lines = annotations.get("lines")
+        speaker_type = annotations.get("speaker_type")
+        if speaker_type != "1:1":
+            event = QualityEvent(
                 dataset="020",
                 split=split,
                 file_path=str(file_path),
                 record_id=record_id,
                 reason_code="skip_speaker_type",
-                reason_detail=f"speaker_type={annotations.get('speaker_type')}",
+                reason_detail=f"speaker_type={speaker_type}",
                 sample_text=None,
                 severity="skip",
             )
+            recorder.extend([event])
+            if not isinstance(lines, list):
+                continue
+            pt_parts: list[str] = []
+            for line in lines:
+                speaker_id = strip_text(line.get("speaker", {}).get("id"))
+                if speaker_id is None:
+                    recorder.add(
+                        dataset="020",
+                        split=split,
+                        file_path=str(file_path),
+                        record_id=record_id,
+                        reason_code="skip_turn",
+                        reason_detail="speaker.id missing",
+                        sample_text=None,
+                        severity="skip",
+                    )
+                    continue
+                text = strip_text(line.get("norm_text"))
+                if text is None:
+                    raw = strip_text(line.get("text"))
+                    if raw is not None:
+                        text = clean_text_prefix(raw)
+                        text = text if text else None
+                if text is None:
+                    recorder.add(
+                        dataset="020",
+                        split=split,
+                        file_path=str(file_path),
+                        record_id=record_id,
+                        reason_code="skip_turn",
+                        reason_detail="turn text missing",
+                        sample_text=None,
+                        severity="skip",
+                    )
+                    continue
+                pt_parts.append(text)
+            if not pt_parts:
+                continue
+            event.severity = "fixup"
+            rows.append(
+                make_row(
+                    source=DATASET_SPECS["020"].source,
+                    split=split,
+                    content=" ".join(pt_parts),
+                    messages=None,
+                )
+            )
             continue
-        lines = annotations.get("lines")
         if not isinstance(lines, list):
             recorder.add(
                 dataset="020",
@@ -773,7 +822,8 @@ def _process_020(
             continue
         speaker_map: dict[str, str] = {}
         turns: list[dict[str, str]] = []
-        bad = False
+        pt_parts: list[str] = []
+        third_speaker_event: QualityEvent | None = None
         for line in lines:
             speaker_id = strip_text(line.get("speaker", {}).get("id"))
             if speaker_id is None:
@@ -806,13 +856,16 @@ def _process_020(
                     severity="skip",
                 )
                 continue
+            pt_parts.append(text)
+            if third_speaker_event is not None:
+                continue
             if speaker_id not in speaker_map:
                 if not speaker_map:
                     speaker_map[speaker_id] = "user"
                 elif len(speaker_map) == 1:
                     speaker_map[speaker_id] = "assistant"
                 else:
-                    recorder.add(
+                    third_speaker_event = QualityEvent(
                         dataset="020",
                         split=split,
                         file_path=str(file_path),
@@ -822,10 +875,21 @@ def _process_020(
                         sample_text=truncate_sample(text),
                         severity="skip",
                     )
-                    bad = True
-                    break
+                    recorder.extend([third_speaker_event])
+                    continue
             turns.append({"role": speaker_map[speaker_id], "content": text})
-        if bad:
+        if third_speaker_event is not None:
+            if not pt_parts:
+                continue
+            third_speaker_event.severity = "fixup"
+            rows.append(
+                make_row(
+                    source=DATASET_SPECS["020"].source,
+                    split=split,
+                    content=" ".join(pt_parts),
+                    messages=None,
+                )
+            )
             continue
         merged = merge_consecutive_turns(turns)
         final_turns = finalize_dialog_turns(

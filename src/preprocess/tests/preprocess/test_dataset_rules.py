@@ -7,6 +7,7 @@ from unittest.mock import patch
 from src.preprocess.dataset_specs import (
     DATASET_SPECS,
     _process_019,
+    _process_020,
     _process_021,
     clean_annotations_text_for_021,
     finalize_dialog_turns,
@@ -234,6 +235,117 @@ class DatasetRuleTests(unittest.TestCase):
         )
         self.assertEqual(rows, [])
         self.assertEqual(recorder.events[-1].reason_code, "missing_assistant")
+
+    def test_020_salvages_multispeaker_content_as_pt_only(self) -> None:
+        recorder = QualityRecorder()
+        rows = _process_020(
+            split="train",
+            file_path=Path("020.json"),
+            obj={
+                "info": [
+                    {
+                        "id": "2026-4",
+                        "annotations": {
+                            "speaker_type": "다자간 대화",
+                            "lines": [
+                                {"speaker": {"id": "1"}, "text": "1 : 첫 번째 발화"},
+                                {"speaker": {"id": "2"}, "text": "2 : 두 번째 발화"},
+                                {"speaker": {"id": "3"}, "text": "3 : 세 번째 발화"},
+                            ],
+                        },
+                    }
+                ]
+            },
+            recorder=recorder,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["content"], "첫 번째 발화 두 번째 발화 세 번째 발화")
+        self.assertIsNone(rows[0]["messages"])
+        skip_speaker_type = next(event for event in recorder.events if event.reason_code == "skip_speaker_type")
+        self.assertEqual(skip_speaker_type.severity, "fixup")
+
+    def test_020_salvages_third_speaker_content_as_pt_only(self) -> None:
+        recorder = QualityRecorder()
+        rows = _process_020(
+            split="train",
+            file_path=Path("020.json"),
+            obj={
+                "info": [
+                    {
+                        "id": "2026-5",
+                        "annotations": {
+                            "speaker_type": "1:1",
+                            "lines": [
+                                {"speaker": {"id": "1"}, "text": "1 : 안녕하세요"},
+                                {"speaker": {"id": "2"}, "text": "2 : 반갑습니다"},
+                                {"speaker": {"id": "3"}, "text": "3 : 저도 왔어요"},
+                            ],
+                        },
+                    }
+                ]
+            },
+            recorder=recorder,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["content"], "안녕하세요 반갑습니다 저도 왔어요")
+        self.assertIsNone(rows[0]["messages"])
+        third_speaker = next(event for event in recorder.events if event.reason_code == "third_speaker")
+        self.assertEqual(third_speaker.severity, "fixup")
+
+    def test_020_keeps_messages_for_valid_one_to_one_dialog(self) -> None:
+        recorder = QualityRecorder()
+        rows = _process_020(
+            split="train",
+            file_path=Path("020.json"),
+            obj={
+                "info": [
+                    {
+                        "id": "2026-6",
+                        "annotations": {
+                            "speaker_type": "1:1",
+                            "lines": [
+                                {"speaker": {"id": "1"}, "text": "1 : 안녕"},
+                                {"speaker": {"id": "2"}, "text": "2 : 반가워"},
+                            ],
+                        },
+                    }
+                ]
+            },
+            recorder=recorder,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0]["messages"],
+            [
+                {"role": "system", "content": "당신은 일상 대화 상대입니다. 사용자의 말에 자연스럽고 친근하게 반응하세요."},
+                {"role": "user", "content": "안녕"},
+                {"role": "assistant", "content": "반가워"},
+            ],
+        )
+
+    def test_020_keeps_skip_when_multispeaker_has_no_usable_turns(self) -> None:
+        recorder = QualityRecorder()
+        rows = _process_020(
+            split="train",
+            file_path=Path("020.json"),
+            obj={
+                "info": [
+                    {
+                        "id": "2026-7",
+                        "annotations": {
+                            "speaker_type": "다자간 대화",
+                            "lines": [
+                                {"speaker": {"id": None}, "text": None},
+                            ],
+                        },
+                    }
+                ]
+            },
+            recorder=recorder,
+        )
+        self.assertEqual(rows, [])
+        skip_speaker_type = next(event for event in recorder.events if event.reason_code == "skip_speaker_type")
+        self.assertEqual(skip_speaker_type.severity, "skip")
 
 
 if __name__ == "__main__":
