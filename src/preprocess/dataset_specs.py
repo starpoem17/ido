@@ -638,7 +638,7 @@ def _process_019(
                 file_path=str(file_path),
                 record_id=case_id,
                 reason_code="skip_field",
-                reason_detail=f"{parent_key}.{child_key} excluded because it is not a list",
+                reason_detail=f"{parent_key}.{child_key} ignored because value is missing or not a list",
                 sample_text=None,
                 severity="skip",
             )
@@ -665,7 +665,7 @@ def _process_019(
             file_path=str(file_path),
             record_id=case_id,
             reason_code="empty_content",
-            reason_detail="all PT fields were excluded or empty after normalization",
+            reason_detail="row skipped because no usable text remained across all PT fields after normalization",
             sample_text=None,
             severity="skip",
         )
@@ -966,6 +966,7 @@ def _process_021(
             continue
         ft_turns = turns[:first_assistant_index] + turns[first_assistant_index + 1 :]
         merged = merge_consecutive_turns(ft_turns)
+        event_count_before_finalize = len(recorder.events)
         final_turns = finalize_dialog_turns(
             turns=merged,
             dataset="021",
@@ -975,6 +976,17 @@ def _process_021(
             recorder=recorder,
         )
         if final_turns is None:
+            new_events = recorder.events[event_count_before_finalize:]
+            if new_events and new_events[-1].reason_code == "bad_start_role":
+                rows.append(
+                    make_row(
+                        source=DATASET_SPECS["021"].source,
+                        split=split,
+                        content=content,
+                        messages=None,
+                    )
+                )
+                continue
             continue
         messages = [{"role": "system", "content": system}, *final_turns]
         rows.append(

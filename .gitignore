@@ -15,3 +15,4 @@ data/korean_raw
 data/tokenizers
 weights/*
 main.py
+/noh

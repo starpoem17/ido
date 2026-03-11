@@ -195,6 +195,7 @@ quality report 필수 항목:
 - role 매핑은 `speaker.id == "B"`를 user, `speaker.id == "A"`를 assistant로 둔다.
 - 첫 번째 `A` 발화 1개를 제거한 뒤 남은 대화를 FT용 `messages`로 구성한다.
 - 제거 후 첫 turn은 반드시 `B(user)`여야 한다.
+- 제거 후 `bad_start_role`가 발생하면 FT용 `messages`는 만들지 않고, PT용 `content`만 유지한 `messages = null` row로 저장한다.
 - `norm_text` 우선, 없으면 `text`를 사용하고 `"A."`, `"B."`, `"A :"`, `"B : "` 같은 접두어를 제거한다.
 - 연속 같은 화자 turn은 공백 하나로 병합한다.
 - 마지막 turn이 user면 마지막 user turn 하나를 제거한다.
