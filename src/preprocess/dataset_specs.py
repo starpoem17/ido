@@ -618,6 +618,7 @@ def _process_019(
     obj: dict[str, Any],
     recorder: QualityRecorder,
 ) -> list[dict[str, Any]]:
+    case_id = str(obj.get("info", {}).get("caseNo") or file_path.name)
     field_paths = [
         ("mentionedItems", "rqestObjet"),
         ("disposal", "disposalcontent"),
@@ -635,9 +636,9 @@ def _process_019(
                 dataset="019",
                 split=split,
                 file_path=str(file_path),
-                record_id=str(obj.get("info", {}).get("caseNo") or file_path.name),
+                record_id=case_id,
                 reason_code="skip_field",
-                reason_detail=f"{parent_key}.{child_key} is not a list",
+                reason_detail=f"{parent_key}.{child_key} excluded because it is not a list",
                 sample_text=None,
                 severity="skip",
             )
@@ -651,25 +652,25 @@ def _process_019(
                     dataset="019",
                     split=split,
                     file_path=str(file_path),
-                    record_id=str(obj.get("info", {}).get("caseNo") or file_path.name),
+                    record_id=case_id,
                     reason_code="skip_item",
-                    reason_detail=f"{parent_key}.{child_key} contains non-string or empty item",
+                    reason_detail=f"{parent_key}.{child_key} excluded a non-string or empty item",
                     sample_text=None,
                     severity="skip",
                 )
-    content = "\n".join(parts) if parts else None
-    if content is None:
+    if not parts:
         recorder.add(
             dataset="019",
             split=split,
             file_path=str(file_path),
-            record_id=str(obj.get("info", {}).get("caseNo") or file_path.name),
+            record_id=case_id,
             reason_code="empty_content",
-            reason_detail="all PT fields were empty after normalization",
+            reason_detail="all PT fields were excluded or empty after normalization",
             sample_text=None,
             severity="skip",
         )
         return []
+    content = "\n".join(parts)
     return [
         make_row(
             source=DATASET_SPECS["019"].source,
