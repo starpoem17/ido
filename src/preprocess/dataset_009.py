@@ -34,7 +34,7 @@ if __name__ == "__main__":
         output_root=OUTPUT_ROOT,
         target_splits=TARGET_SPLITS,
         workers=WORKERS,
-        shard_row_limit=SHARD_ROW_LIMIT,
+        shard_row_limit=SHARD_ROW_LIMIT, #최대 몇개의 row를 하나의 shard 파일로 만들지 결정. 예를 들어 5000으로 설정하면 5000개의 row마다 새로운 shard 파일이 만들어짐.
         overwrite_output=OVERWRITE_OUTPUT,
         limit_files=LIMIT_FILES,
     )

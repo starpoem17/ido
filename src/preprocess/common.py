@@ -49,10 +49,10 @@ SPECIAL_TOKEN_BY_ROLE = {
     "assistant": "<|assistant|>",
 }
 
-_TOKENIZER: Tokenizer | None = None
+_TOKENIZER: Tokenizer | None = None #lazy loading 방식 때문에 아직 안불러왔다고 표기하는 것
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True) #객체 만든 후 값 못 바꾸게 
 class Message:
     role: str
     content: str
@@ -66,7 +66,7 @@ def log(message: str) -> None:
     if not ENABLE_DEBUG_LOG:
         return
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] {message}", flush=True)
+    print(f"[{ts}] {message}", flush=True) #그냥 바로 출력하게 flush true
 
 
 def progress(
@@ -156,7 +156,7 @@ def build_content_from_messages(messages: Sequence[dict[str, str]]) -> str:
         message["content"]
         for message in messages
         if message["role"] in {"user", "assistant"}
-    )
+    ) 
 
 
 def validate_row(row: dict[str, Any]) -> None:
@@ -188,7 +188,7 @@ def ensure_parent_dir(path: Path) -> None:
 def write_json(path: Path, payload: Any) -> None:
     ensure_parent_dir(path)
     with path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2) # 예쁘게 json 저장, 폴더 준비 
 
 
 def truncate_sample(text: str | None) -> str | None:

@@ -67,7 +67,7 @@ def stage_dataset(config: StageConfig) -> None:
             executor.submit(process_file, spec.dataset_id, split, path): (split, path)
             for split, path in file_items
         }
-        for future in as_completed(futures):
+        for future in as_completed(futures): # 완료된 작업이 있을 때마다 결과를 처리
             split, path = futures[future]
             rows, events, stats = future.result()
             progress.update(1)
@@ -85,7 +85,7 @@ def stage_dataset(config: StageConfig) -> None:
                 shard_index += 1
                 shard_rows = shard_rows[config.shard_row_limit :]
     progress.close()
-    if shard_rows:
+    if shard_rows: #마지막에 1000개 미만으로 남은 row를 위한 샤딩
         _flush_shard(dataset_root, shard_rows, shard_index)
         aggregate["shard_files"] += 1
     recorder.write_jsonl(meta_root / f"quality_events_{config.target_split}.jsonl")
