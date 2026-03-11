@@ -81,20 +81,41 @@ class DatasetRuleTests(unittest.TestCase):
                 "facts": {"bsisFacts": ["", "사실관계"]},
                 "dcss": {"courtDcss": ["판단"]},
                 "close": {"cnclsns": [123, "결론"]},
+                "clauseArticle": ["조항 본문"],
+                "comProvision": ["공통 규정"],
             },
             recorder=recorder,
         )
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["content"], "청구 취지\n사실관계\n판단\n결론")
+        self.assertEqual(rows[0]["content"], "청구 취지\n사실관계\n판단\n결론\n조항 본문\n공통 규정")
         self.assertIsNone(rows[0]["messages"])
         self.assertCountEqual(
             [event.reason_code for event in recorder.events],
             ["skip_field", "skip_item", "skip_item"],
         )
+        self.assertTrue(all(event.severity == "fixup" for event in recorder.events))
         self.assertIn(
             "assrs.dedatAssrs ignored because value is missing or not a list",
             [event.reason_detail for event in recorder.events],
         )
+
+    def test_019_keeps_rows_with_clause_article_and_com_provision_only(self) -> None:
+        recorder = QualityRecorder()
+        rows = _process_019(
+            split="train",
+            file_path=Path("019.json"),
+            obj={
+                "info": {"caseNo": "2026가단3"},
+                "clauseArticle": ["제1조"],
+                "comProvision": ["공통규정"],
+            },
+            recorder=recorder,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["content"], "제1조\n공통규정")
+        self.assertEqual(len(recorder.events), 6)
+        self.assertTrue(all(event.reason_code == "skip_field" for event in recorder.events))
+        self.assertTrue(all(event.severity == "fixup" for event in recorder.events))
 
     def test_019_skips_only_when_all_fields_empty(self) -> None:
         recorder = QualityRecorder()
@@ -109,6 +130,8 @@ class DatasetRuleTests(unittest.TestCase):
                 "facts": {"bsisFacts": []},
                 "dcss": {"courtDcss": [None]},
                 "close": {"cnclsns": []},
+                "clauseArticle": [],
+                "comProvision": ["   "],
             },
             recorder=recorder,
         )
@@ -116,8 +139,14 @@ class DatasetRuleTests(unittest.TestCase):
         self.assertEqual(recorder.events[-1].reason_code, "empty_content")
         self.assertEqual(
             recorder.events[-1].reason_detail,
-            "row skipped because no usable text remained across all PT fields after normalization",
+            (
+                "row skipped because no usable text remained across 019 candidate fields "
+                "(mentionedItems.rqestObjet, disposal.disposalcontent, assrs.dedatAssrs, "
+                "facts.bsisFacts, dcss.courtDcss, close.cnclsns, clauseArticle, comProvision) "
+                "after normalization"
+            ),
         )
+        self.assertTrue(all(event.severity == "skip" for event in recorder.events))
 
     def test_021_content_cleaning_keeps_newlines(self) -> None:
         content = clean_annotations_text_for_021("A. 첫줄\nB. 둘째 줄\n\nA : 셋째줄")

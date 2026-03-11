@@ -619,28 +619,37 @@ def _process_019(
     recorder: QualityRecorder,
 ) -> list[dict[str, Any]]:
     case_id = str(obj.get("info", {}).get("caseNo") or file_path.name)
-    field_paths = [
-        ("mentionedItems", "rqestObjet"),
-        ("disposal", "disposalcontent"),
-        ("assrs", "dedatAssrs"),
-        ("facts", "bsisFacts"),
-        ("dcss", "courtDcss"),
-        ("close", "cnclsns"),
+    field_specs = [
+        ("mentionedItems.rqestObjet", "mentionedItems", "rqestObjet"),
+        ("disposal.disposalcontent", "disposal", "disposalcontent"),
+        ("assrs.dedatAssrs", "assrs", "dedatAssrs"),
+        ("facts.bsisFacts", "facts", "bsisFacts"),
+        ("dcss.courtDcss", "dcss", "courtDcss"),
+        ("close.cnclsns", "close", "cnclsns"),
+        ("clauseArticle", "clauseArticle", None),
+        ("comProvision", "comProvision", None),
     ]
+    candidate_fields = ", ".join(field_label for field_label, _, _ in field_specs)
     parts: list[str] = []
-    for parent_key, child_key in field_paths:
-        parent = obj.get(parent_key)
-        values = parent.get(child_key) if isinstance(parent, dict) else None
+    pending_events: list[QualityEvent] = []
+    for field_label, parent_key, child_key in field_specs:
+        if child_key is None:
+            values = obj.get(parent_key)
+        else:
+            parent = obj.get(parent_key)
+            values = parent.get(child_key) if isinstance(parent, dict) else None
         if not isinstance(values, list):
-            recorder.add(
-                dataset="019",
-                split=split,
-                file_path=str(file_path),
-                record_id=case_id,
-                reason_code="skip_field",
-                reason_detail=f"{parent_key}.{child_key} ignored because value is missing or not a list",
-                sample_text=None,
-                severity="skip",
+            pending_events.append(
+                QualityEvent(
+                    dataset="019",
+                    split=split,
+                    file_path=str(file_path),
+                    record_id=case_id,
+                    reason_code="skip_field",
+                    reason_detail=f"{field_label} ignored because value is missing or not a list",
+                    sample_text=None,
+                    severity="skip",
+                )
             )
             continue
         for value in values:
@@ -648,16 +657,34 @@ def _process_019(
             if text is not None:
                 parts.append(text)
             else:
-                recorder.add(
-                    dataset="019",
-                    split=split,
-                    file_path=str(file_path),
-                    record_id=case_id,
-                    reason_code="skip_item",
-                    reason_detail=f"{parent_key}.{child_key} excluded a non-string or empty item",
-                    sample_text=None,
-                    severity="skip",
+                pending_events.append(
+                    QualityEvent(
+                        dataset="019",
+                        split=split,
+                        file_path=str(file_path),
+                        record_id=case_id,
+                        reason_code="skip_item",
+                        reason_detail=f"{field_label} excluded a non-string or empty item",
+                        sample_text=None,
+                        severity="skip",
+                    )
                 )
+    partial_severity = "fixup" if parts else "skip"
+    recorder.extend(
+        [
+            QualityEvent(
+                dataset=event.dataset,
+                split=event.split,
+                file_path=event.file_path,
+                record_id=event.record_id,
+                reason_code=event.reason_code,
+                reason_detail=event.reason_detail,
+                sample_text=event.sample_text,
+                severity=partial_severity,
+            )
+            for event in pending_events
+        ]
+    )
     if not parts:
         recorder.add(
             dataset="019",
@@ -665,7 +692,10 @@ def _process_019(
             file_path=str(file_path),
             record_id=case_id,
             reason_code="empty_content",
-            reason_detail="row skipped because no usable text remained across all PT fields after normalization",
+            reason_detail=(
+                "row skipped because no usable text remained across 019 candidate fields "
+                f"({candidate_fields}) after normalization"
+            ),
             sample_text=None,
             severity="skip",
         )

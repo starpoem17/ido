@@ -243,6 +243,7 @@
 
 2. `019`
 - `clauseArticle[*]`
+- `comProvision[*]`
 - `ftcCnclsns` 내 문자열
 - `illdcssBasiss` 내 문자열
 

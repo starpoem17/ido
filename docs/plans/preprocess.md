@@ -170,8 +170,12 @@ quality report 필수 항목:
   4. `facts.bsisFacts`
   5. `dcss.courtDcss`
   6. `close.cnclsns`
+  7. `clauseArticle`
+  8. `comProvision`
 - 각 필드는 배열일 때만 사용하고, 문자열 원소에만 strip을 적용한다.
-- 6개 필드 중 일부가 비어 있거나 배열이 아니면 그 필드만 제외하고 나머지 필드로 계속 `content`를 만든다.
+- 8개 후보 필드 중 하나라도 유효하면 row를 유지한다.
+- 8개 후보 필드 중 일부가 비어 있거나 배열이 아니면 그 필드만 제외하고 나머지 필드로 계속 `content`를 만든다.
+- row가 생성된 경우 `skip_field`, `skip_item`은 `fixup`으로 기록한다.
 - 최종적으로 유효 문자열이 하나도 남지 않았을 때만 해당 레코드를 제외한다.
 - `messages = null`
 - `info`, `concerned`, `org`, `relateLaword`, `qotatPrcdnt`, `acusrAssrs`는 기본 학습 입력에서 사용하지 않는다.

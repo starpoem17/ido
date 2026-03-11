@@ -531,9 +531,11 @@ def extract_from_json_obj(
     if source.startswith("019."):
         if not isinstance(obj, dict):
             return
-        clause_article = obj.get("clauseArticle")
-        if isinstance(clause_article, list):
-            for x in clause_article:
+        for field_name in ("clauseArticle", "comProvision"):
+            field_values = obj.get(field_name)
+            if not isinstance(field_values, list):
+                continue
+            for x in field_values:
                 if isinstance(x, str):
                     yield x
                 else:
