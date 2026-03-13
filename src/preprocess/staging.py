@@ -19,7 +19,7 @@ from .common import (
     stable_sorted_paths,
     write_json,
 )
-from .dataset_specs import DATASET_SPECS, process_file, resolve_input_files
+from .dataset_specs import DATASET_SPECS, get_self_split_stats, process_file, resolve_input_files
 from .quality import QualityRecorder
 
 
@@ -64,11 +64,17 @@ def stage_dataset(config: StageConfig) -> None:
     progress = progress_bar(total=len(file_items), desc=f"stage:{spec.dataset_id}:{config.target_split}")
     with ProcessPoolExecutor(max_workers=config.workers) as executor:
         futures = {
-            executor.submit(process_file, spec.dataset_id, split, path): (split, path)
-            for split, path in file_items
+            executor.submit(
+                process_file,
+                spec.dataset_id,
+                item.split,
+                item.path,
+                item.selected_record_ids,
+            ): item
+            for item in file_items
         }
         for future in as_completed(futures): # 완료된 작업이 있을 때마다 결과를 처리
-            split, path = futures[future]
+            item = futures[future]
             rows, events, stats = future.result()
             progress.update(1)
             recorder.extend(events)
@@ -76,7 +82,7 @@ def stage_dataset(config: StageConfig) -> None:
             shard_rows.extend(rows)
             if ENABLE_DEBUG_LOG:
                 log(
-                    f"[stage:{spec.dataset_id}:{config.target_split}] file={path.name} rows={len(rows)} total_rows={aggregate['output_rows']}"
+                    f"[stage:{spec.dataset_id}:{config.target_split}] file={item.path.name} rows={len(rows)} total_rows={aggregate['output_rows']}"
                 )
             while len(shard_rows) >= config.shard_row_limit:
                 part = shard_rows[: config.shard_row_limit]
@@ -101,6 +107,9 @@ def stage_dataset(config: StageConfig) -> None:
         "shard_files": aggregate["shard_files"],
         "quality_event_count": len(recorder.events),
     }
+    self_split_stats = get_self_split_stats(spec.dataset_id)
+    if self_split_stats is not None:
+        stage_manifest["self_split_stats"] = self_split_stats
     write_json(meta_root / f"stage_manifest_{config.target_split}.json", stage_manifest)
     log(
         f"[stage:{spec.dataset_id}:{config.target_split}] completed rows={aggregate['output_rows']} shards={aggregate['shard_files']} quality_events={len(recorder.events)}"

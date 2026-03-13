@@ -9,6 +9,9 @@ from src.preprocess.dataset_specs import (
     _process_019,
     _process_020,
     _process_021,
+    _process_nikl_newspaper_2020,
+    _process_nikl_spoken,
+    _process_nikl_written,
     clean_annotations_text_for_021,
     finalize_dialog_turns,
     make_row,
@@ -148,6 +151,201 @@ class DatasetRuleTests(unittest.TestCase):
             ),
         )
         self.assertTrue(all(event.severity == "skip" for event in recorder.events))
+
+    def test_nikl_newspaper_2020_uses_first_valid_paragraph_as_title(self) -> None:
+        recorder = QualityRecorder()
+        rows = _process_nikl_newspaper_2020(
+            split="train",
+            file_path=Path("news.json"),
+            obj={
+                "document": [
+                    {
+                        "id": "doc-1",
+                        "metadata": {"title": "국제신문 2019년 기사"},
+                        "paragraph": [
+                            {"form": "  기사 제목  "},
+                            {"form": "  첫 번째 본문  "},
+                            {"form": ""},
+                            {"form": "두 번째 본문"},
+                        ],
+                    }
+                ]
+            },
+            recorder=recorder,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0]["content"],
+            "제목: 기사 제목\n내용: 첫 번째 본문\n두 번째 본문",
+        )
+        self.assertIsNone(rows[0]["messages"])
+        self.assertEqual(rows[0]["source"], DATASET_SPECS["nikl_newspaper_2020"].source)
+        skip_event = next(event for event in recorder.events if event.reason_code == "skip_paragraph")
+        self.assertEqual(skip_event.severity, "fixup")
+
+    def test_nikl_newspaper_2020_skips_title_only_document(self) -> None:
+        recorder = QualityRecorder()
+        rows = _process_nikl_newspaper_2020(
+            split="train",
+            file_path=Path("news.json"),
+            obj={
+                "document": [
+                    {
+                        "id": "doc-2",
+                        "paragraph": [
+                            {"form": "기사 제목"},
+                            {"form": "   "},
+                        ],
+                    }
+                ]
+            },
+            recorder=recorder,
+        )
+        self.assertEqual(rows, [])
+        self.assertEqual(recorder.events[-1].reason_code, "title_only_document")
+        self.assertTrue(all(event.severity == "skip" for event in recorder.events))
+
+    def test_nikl_newspaper_2020_filters_selected_record_ids(self) -> None:
+        recorder = QualityRecorder()
+        rows = _process_nikl_newspaper_2020(
+            split="val",
+            file_path=Path("news.json"),
+            obj={
+                "document": [
+                    {"id": "doc-1", "paragraph": [{"form": "제목1"}, {"form": "본문1"}]},
+                    {"id": "doc-2", "paragraph": [{"form": "제목2"}, {"form": "본문2"}]},
+                ]
+            },
+            recorder=recorder,
+            selected_record_ids=("doc-2",),
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["split"], "val")
+        self.assertEqual(rows[0]["content"], "제목: 제목2\n내용: 본문2")
+        self.assertEqual(recorder.events, [])
+
+    def test_nikl_spoken_builds_pt_content_from_utterance_forms(self) -> None:
+        recorder = QualityRecorder()
+        rows = _process_nikl_spoken(
+            split="train",
+            file_path=Path("spoken.json"),
+            obj={
+                "document": [
+                    {
+                        "id": "doc-1",
+                        "utterance": [
+                            {"form": " 첫 발화 "},
+                            {"form": ""},
+                            {"form": "둘째 발화"},
+                        ],
+                    }
+                ]
+            },
+            recorder=recorder,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["content"], "첫 발화\n둘째 발화")
+        self.assertIsNone(rows[0]["messages"])
+        skip_event = next(event for event in recorder.events if event.reason_code == "skip_utterance")
+        self.assertEqual(skip_event.severity, "fixup")
+
+    def test_nikl_spoken_skips_document_without_valid_forms(self) -> None:
+        recorder = QualityRecorder()
+        rows = _process_nikl_spoken(
+            split="train",
+            file_path=Path("spoken.json"),
+            obj={
+                "document": [
+                    {
+                        "id": "doc-2",
+                        "utterance": [
+                            {"form": ""},
+                            {"form": "   "},
+                        ],
+                    }
+                ]
+            },
+            recorder=recorder,
+        )
+        self.assertEqual(rows, [])
+        self.assertEqual(recorder.events[-1].reason_code, "empty_utterances")
+        self.assertTrue(all(event.severity == "skip" for event in recorder.events))
+
+    def test_nikl_written_builds_content_from_metadata_title_and_paragraphs(self) -> None:
+        recorder = QualityRecorder()
+        rows = _process_nikl_written(
+            split="train",
+            file_path=Path("written.json"),
+            obj={
+                "document": [
+                    {
+                        "id": "doc-1",
+                        "metadata": {"title": "  폭력과 존엄 사이  "},
+                        "paragraph": [
+                            {"form": " 들어가는 말 "},
+                            {"form": ""},
+                            {"form": "잠깐 내린 눈"},
+                        ],
+                    }
+                ]
+            },
+            recorder=recorder,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0]["content"],
+            "제목: 폭력과 존엄 사이\n내용: 들어가는 말\n잠깐 내린 눈",
+        )
+        self.assertEqual(rows[0]["source"], DATASET_SPECS["nikl_written"].source)
+        self.assertIsNone(rows[0]["messages"])
+        skip_event = next(event for event in recorder.events if event.reason_code == "skip_paragraph")
+        self.assertEqual(skip_event.severity, "fixup")
+
+    def test_nikl_written_requires_non_empty_title(self) -> None:
+        recorder = QualityRecorder()
+        rows = _process_nikl_written(
+            split="train",
+            file_path=Path("written.json"),
+            obj={
+                "document": [
+                    {
+                        "id": "doc-2",
+                        "metadata": {"title": "   "},
+                        "paragraph": [{"form": "본문"}],
+                    }
+                ]
+            },
+            recorder=recorder,
+        )
+        self.assertEqual(rows, [])
+        self.assertEqual(recorder.events[-1].reason_code, "missing_title")
+
+    def test_nikl_written_filters_selected_record_ids(self) -> None:
+        recorder = QualityRecorder()
+        rows = _process_nikl_written(
+            split="val",
+            file_path=Path("written.json"),
+            obj={
+                "document": [
+                    {
+                        "id": "doc-1",
+                        "metadata": {"title": "제목1"},
+                        "paragraph": [{"form": "본문1"}],
+                    },
+                    {
+                        "id": "doc-2",
+                        "metadata": {"title": "제목2"},
+                        "paragraph": [{"form": "본문2"}],
+                    },
+                ]
+            },
+            recorder=recorder,
+            selected_record_ids=("doc-2",),
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["split"], "val")
+        self.assertEqual(rows[0]["content"], "제목: 제목2\n내용: 본문2")
+        self.assertEqual(recorder.events, [])
 
     def test_021_content_cleaning_keeps_newlines(self) -> None:
         content = clean_annotations_text_for_021("A. 첫줄\nB. 둘째 줄\n\nA : 셋째줄")

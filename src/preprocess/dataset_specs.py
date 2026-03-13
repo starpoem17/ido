@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,19 @@ class DatasetSpec:
     source: str
     train_patterns: tuple[str, ...]
     val_patterns: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class InputFileItem:
+    split: str
+    path: Path
+    selected_record_ids: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
+class SelfSplitPlan:
+    assignments: dict[str, dict[Path, tuple[str, ...]]]
+    stats: dict[str, int]
 
 
 DATASET_SPECS: dict[str, DatasetSpec] = {
@@ -114,6 +128,32 @@ DATASET_SPECS: dict[str, DatasetSpec] = {
             "data/korean_raw/030.웹데이터 기반 한국어 말뭉치 데이터/01.데이터/2.Validation/라벨링데이터/**/*.json",
         ),
     ),
+    "nikl_newspaper_2020": DatasetSpec(
+        dataset_id="nikl_newspaper_2020",
+        source="국립국어원 신문 말뭉치 2020",
+        train_patterns=(
+            "data/korean_raw/국립국어원 신문 말뭉치 2020/*.json",
+            "data/korean_raw/국립국어원 신문 말뭉치 2020(버전 1.1)/*.json",
+        ),
+        val_patterns=(),
+    ),
+    "nikl_spoken": DatasetSpec(
+        dataset_id="nikl_spoken",
+        source="국립국어원 구어 말뭉치",
+        train_patterns=(
+            "data/korean_raw/국립국어원 구어 말뭉치/*.json",
+            "data/korean_raw/국립국어원 구어 말뭉치(버전 1.2)/*.json",
+        ),
+        val_patterns=(),
+    ),
+    "nikl_written": DatasetSpec(
+        dataset_id="nikl_written",
+        source="NIKL_WRITTEN(v1.2)",
+        train_patterns=(
+            "data/korean_raw/NIKL_WRITTEN(v1.2)/*.json",
+        ),
+        val_patterns=(),
+    ),
     "045": DatasetSpec(
         dataset_id="045",
         source="045.지식검색 대화",
@@ -171,9 +211,11 @@ MULTI_SESSION_CONFIG = {
 }
 
 TEXT_PREFIX_RE = re.compile(r"^\s*(?:[AB]|\d+)\s*[.:：]\s*")
+SELF_SPLIT_DATASET_IDS = {"nikl_newspaper_2020", "nikl_spoken", "nikl_written"}
+_SELF_SPLIT_PLAN_CACHE: dict[str, SelfSplitPlan] = {}
 
 
-def resolve_input_files(spec: DatasetSpec, target_split: str) -> list[tuple[str, Path]]:
+def resolve_input_files(spec: DatasetSpec, target_split: str) -> list[InputFileItem]:
     if spec.dataset_id == "novel24":
         files = [
             path
@@ -182,19 +224,193 @@ def resolve_input_files(spec: DatasetSpec, target_split: str) -> list[tuple[str,
         ]
         train_files, val_files = split_novel24_files(files)
         if target_split == "train":
-            return [("train", path) for path in files if path in train_files]
+            return [InputFileItem(split="train", path=path) for path in files if path in train_files]
         if target_split == "val":
-            return [("val", path) for path in files if path in val_files]
+            return [InputFileItem(split="val", path=path) for path in files if path in val_files]
         raise ValueError(f"unsupported split for novel24: {target_split}")
+    if spec.dataset_id in SELF_SPLIT_DATASET_IDS:
+        plan = get_self_split_plan(spec.dataset_id)
+        assignments = plan.assignments[target_split]
+        return [
+            InputFileItem(split=target_split, path=path, selected_record_ids=record_ids)
+            for path, record_ids in stable_sorted_assignment_items(assignments)
+        ]
 
     patterns = spec.train_patterns if target_split == "train" else spec.val_patterns
     files: list[Path] = []
     for pattern in patterns:
         files.extend(Path().glob(pattern))
-    sorted_files = stable_sorted_paths(files)
+    sorted_files = stable_sorted_paths(dict.fromkeys(files))
     if spec.dataset_id == "023":
         sorted_files = [path for path in sorted_files if path.name.startswith("LAB_")]
-    return [(target_split, path) for path in sorted_files]
+    return [InputFileItem(split=target_split, path=path) for path in sorted_files]
+
+
+def stable_sorted_assignment_items(
+    assignments: dict[Path, tuple[str, ...]],
+) -> list[tuple[Path, tuple[str, ...]]]:
+    return sorted(assignments.items(), key=lambda item: str(item[0]))
+
+
+def get_self_split_plan(dataset_id: str) -> SelfSplitPlan:
+    cached = _SELF_SPLIT_PLAN_CACHE.get(dataset_id)
+    if cached is not None:
+        return cached
+    spec = DATASET_SPECS[dataset_id]
+    all_files: list[Path] = []
+    for pattern in spec.train_patterns:
+        all_files.extend(Path().glob(pattern))
+    files = stable_sorted_paths(dict.fromkeys(all_files))
+    candidates: list[tuple[str, Path]] = []
+    raw_candidate_count = 0
+    for file_path in files:
+        try:
+            with file_path.open("r", encoding="utf-8") as f:
+                obj = json.load(f)
+        except Exception:  # noqa: BLE001
+            continue
+        raw_count, record_ids = collect_self_split_candidates(dataset_id, file_path, obj)
+        raw_candidate_count += raw_count
+        for record_id in record_ids:
+            candidates.append((record_id, file_path))
+    assignments = assign_self_split_records(source=spec.source, candidates=candidates)
+    stats = {
+        "raw_candidate_count": raw_candidate_count,
+        "valid_candidate_count": len(candidates),
+        "pre_split_excluded_count": raw_candidate_count - len(candidates),
+        "train_row_count": sum(len(record_ids) for record_ids in assignments["train"].values()),
+        "val_row_count": sum(len(record_ids) for record_ids in assignments["val"].values()),
+    }
+    plan = SelfSplitPlan(assignments=assignments, stats=stats)
+    _SELF_SPLIT_PLAN_CACHE[dataset_id] = plan
+    return plan
+
+
+def get_self_split_stats(dataset_id: str) -> dict[str, int] | None:
+    if dataset_id not in SELF_SPLIT_DATASET_IDS:
+        return None
+    return dict(get_self_split_plan(dataset_id).stats)
+
+
+def collect_self_split_candidates(
+    dataset_id: str,
+    file_path: Path,
+    obj: dict[str, Any],
+) -> tuple[int, list[str]]:
+    documents = obj.get("document")
+    if not isinstance(documents, list):
+        return 0, []
+    if dataset_id == "nikl_newspaper_2020":
+        return collect_nikl_newspaper_2020_candidate_keys(file_path, documents)
+    if dataset_id == "nikl_spoken":
+        return collect_nikl_spoken_candidate_keys(file_path, documents)
+    if dataset_id == "nikl_written":
+        return collect_nikl_written_candidate_keys(file_path, documents)
+    raise ValueError(f"unsupported self split dataset_id: {dataset_id}")
+
+
+def assign_self_split_records(
+    *,
+    source: str,
+    candidates: Sequence[tuple[str, Path]],
+) -> dict[str, dict[Path, tuple[str, ...]]]:
+    ranked: list[tuple[str, str, Path]] = []
+    for record_id, file_path in candidates:
+        digest = hashlib.sha256(f"{source}\t{record_id}".encode("utf-8")).hexdigest()
+        ranked.append((digest, record_id, file_path))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    total = len(ranked)
+    train_cut = total if total == 1 else max(1, int(total * 0.9))
+    if total >= 2 and train_cut >= total:
+        train_cut = total - 1
+    train_assignments: dict[Path, list[str]] = defaultdict(list)
+    val_assignments: dict[Path, list[str]] = defaultdict(list)
+    for index, (_, record_id, file_path) in enumerate(ranked):
+        target = train_assignments if index < train_cut else val_assignments
+        target[file_path].append(record_id)
+    return {
+        "train": {path: tuple(record_ids) for path, record_ids in train_assignments.items()},
+        "val": {path: tuple(record_ids) for path, record_ids in val_assignments.items()},
+    }
+
+
+def collect_nikl_newspaper_2020_candidate_keys(
+    file_path: Path,
+    documents: Sequence[Any],
+) -> tuple[int, list[str]]:
+    raw_count = len(documents)
+    record_ids: list[str] = []
+    for index, document in enumerate(documents):
+        if not isinstance(document, dict):
+            continue
+        paragraphs = document.get("paragraph")
+        if not isinstance(paragraphs, list):
+            continue
+        valid_forms = [
+            form_text
+            for paragraph in paragraphs
+            if isinstance(paragraph, dict)
+            for form_text in [strip_text(paragraph.get("form"))]
+            if form_text is not None
+        ]
+        if len(valid_forms) < 2:
+            continue
+        record_ids.append(str(document.get("id") or f"{file_path.stem}:{index}"))
+    return raw_count, record_ids
+
+
+def collect_nikl_spoken_candidate_keys(
+    file_path: Path,
+    documents: Sequence[Any],
+) -> tuple[int, list[str]]:
+    raw_count = len(documents)
+    record_ids: list[str] = []
+    for index, document in enumerate(documents):
+        if not isinstance(document, dict):
+            continue
+        utterances = document.get("utterance")
+        if not isinstance(utterances, list):
+            continue
+        valid_forms = [
+            form_text
+            for utterance in utterances
+            if isinstance(utterance, dict)
+            for form_text in [strip_text(utterance.get("form"))]
+            if form_text is not None
+        ]
+        if not valid_forms:
+            continue
+        record_ids.append(str(document.get("id") or f"{file_path.stem}:{index}"))
+    return raw_count, record_ids
+
+
+def collect_nikl_written_candidate_keys(
+    file_path: Path,
+    documents: Sequence[Any],
+) -> tuple[int, list[str]]:
+    raw_count = len(documents)
+    record_ids: list[str] = []
+    for index, document in enumerate(documents):
+        if not isinstance(document, dict):
+            continue
+        metadata = document.get("metadata")
+        title = strip_text(metadata.get("title") if isinstance(metadata, dict) else None)
+        if title is None:
+            continue
+        paragraphs = document.get("paragraph")
+        if not isinstance(paragraphs, list):
+            continue
+        valid_forms = [
+            form_text
+            for paragraph in paragraphs
+            if isinstance(paragraph, dict)
+            for form_text in [strip_text(paragraph.get("form"))]
+            if form_text is not None
+        ]
+        if not valid_forms:
+            continue
+        record_ids.append(str(document.get("id") or f"{file_path.stem}:{index}"))
+    return raw_count, record_ids
 
 
 def clean_text_prefix(text: str) -> str:
@@ -318,6 +534,7 @@ def process_file(
     dataset_id: str,
     split: str,
     file_path: Path,
+    selected_record_ids: tuple[str, ...] | None = None,
 ) -> tuple[list[dict[str, Any]], list[QualityEvent], dict[str, int]]:
     recorder = QualityRecorder()
     stats = Counter(input_files=1, output_rows=0)
@@ -332,6 +549,7 @@ def process_file(
                 split=split,
                 file_path=file_path,
                 recorder=recorder,
+                selected_record_ids=selected_record_ids,
             )
     except Exception as exc:  # noqa: BLE001
         recorder.add(
@@ -373,6 +591,7 @@ def _process_json_dataset(
     split: str,
     file_path: Path,
     recorder: QualityRecorder,
+    selected_record_ids: tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
     obj = _read_json(file_path, dataset_id, split, recorder)
     if obj is None:
@@ -391,6 +610,30 @@ def _process_json_dataset(
         return _process_023(split, file_path, obj, recorder)
     if dataset_id == "030":
         return _process_030(split, file_path, obj, recorder)
+    if dataset_id == "nikl_newspaper_2020":
+        return _process_nikl_newspaper_2020(
+            split,
+            file_path,
+            obj,
+            recorder,
+            selected_record_ids=selected_record_ids,
+        )
+    if dataset_id == "nikl_spoken":
+        return _process_nikl_spoken(
+            split,
+            file_path,
+            obj,
+            recorder,
+            selected_record_ids=selected_record_ids,
+        )
+    if dataset_id == "nikl_written":
+        return _process_nikl_written(
+            split,
+            file_path,
+            obj,
+            recorder,
+            selected_record_ids=selected_record_ids,
+        )
     if dataset_id == "045":
         return _process_045(split, file_path, obj, recorder)
     if dataset_id == "046":
@@ -1229,6 +1472,375 @@ def _collect_reference_text(values: Any) -> str | None:
     if not parts:
         return None
     return " ".join(parts)
+
+
+def _process_nikl_newspaper_2020(
+    split: str,
+    file_path: Path,
+    obj: dict[str, Any],
+    recorder: QualityRecorder,
+    selected_record_ids: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    allowed_record_ids = set(selected_record_ids) if selected_record_ids is not None else None
+    documents = obj.get("document")
+    if not isinstance(documents, list):
+        recorder.add(
+            dataset="nikl_newspaper_2020",
+            split=split,
+            file_path=str(file_path),
+            record_id=None,
+            reason_code="missing_document",
+            reason_detail="document must be a list",
+            sample_text=None,
+            severity="skip",
+        )
+        return []
+    rows: list[dict[str, Any]] = []
+    for index, document in enumerate(documents):
+        if not isinstance(document, dict):
+            if allowed_record_ids is not None:
+                continue
+            recorder.add(
+                dataset="nikl_newspaper_2020",
+                split=split,
+                file_path=str(file_path),
+                record_id=f"{file_path.stem}:{index}",
+                reason_code="invalid_document",
+                reason_detail="document item must be an object",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        record_id = str(document.get("id") or f"{file_path.stem}:{index}")
+        if allowed_record_ids is not None and record_id not in allowed_record_ids:
+            continue
+        paragraphs = document.get("paragraph")
+        if not isinstance(paragraphs, list):
+            recorder.add(
+                dataset="nikl_newspaper_2020",
+                split=split,
+                file_path=str(file_path),
+                record_id=record_id,
+                reason_code="missing_paragraph",
+                reason_detail="document.paragraph must be a list",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        valid_forms: list[str] = []
+        skipped_paragraph_events: list[QualityEvent] = []
+        for paragraph_index, paragraph in enumerate(paragraphs):
+            form_value = paragraph.get("form") if isinstance(paragraph, dict) else None
+            form_text = strip_text(form_value)
+            if form_text is not None:
+                valid_forms.append(form_text)
+                continue
+            skipped_paragraph_events.append(
+                QualityEvent(
+                    dataset="nikl_newspaper_2020",
+                    split=split,
+                    file_path=str(file_path),
+                    record_id=record_id,
+                    reason_code="skip_paragraph",
+                    reason_detail=f"paragraph[{paragraph_index}].form missing or empty",
+                    sample_text=truncate_sample(form_value) if isinstance(form_value, str) else None,
+                    severity="skip",
+                )
+            )
+        if not valid_forms:
+            recorder.extend(skipped_paragraph_events)
+            recorder.add(
+                dataset="nikl_newspaper_2020",
+                split=split,
+                file_path=str(file_path),
+                record_id=record_id,
+                reason_code="empty_paragraphs",
+                reason_detail="no usable paragraph.form remained after normalization",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        title = valid_forms[0]
+        body_paragraphs = valid_forms[1:]
+        if not body_paragraphs:
+            recorder.extend(skipped_paragraph_events)
+            recorder.add(
+                dataset="nikl_newspaper_2020",
+                split=split,
+                file_path=str(file_path),
+                record_id=record_id,
+                reason_code="title_only_document",
+                reason_detail="document has a title paragraph but no body paragraphs",
+                sample_text=truncate_sample(title),
+                severity="skip",
+            )
+            continue
+        if skipped_paragraph_events:
+            recorder.extend(
+                [
+                    QualityEvent(
+                        dataset=event.dataset,
+                        split=event.split,
+                        file_path=event.file_path,
+                        record_id=event.record_id,
+                        reason_code=event.reason_code,
+                        reason_detail=event.reason_detail,
+                        sample_text=event.sample_text,
+                        severity="fixup",
+                    )
+                    for event in skipped_paragraph_events
+                ]
+            )
+        body = "\n".join(body_paragraphs)
+        rows.append(
+            make_row(
+                source=DATASET_SPECS["nikl_newspaper_2020"].source,
+                split=split,
+                content=f"제목: {title}\n내용: {body}",
+                messages=None,
+            )
+        )
+    return rows
+
+
+def _process_nikl_spoken(
+    split: str,
+    file_path: Path,
+    obj: dict[str, Any],
+    recorder: QualityRecorder,
+    selected_record_ids: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    allowed_record_ids = set(selected_record_ids) if selected_record_ids is not None else None
+    documents = obj.get("document")
+    if not isinstance(documents, list):
+        recorder.add(
+            dataset="nikl_spoken",
+            split=split,
+            file_path=str(file_path),
+            record_id=None,
+            reason_code="missing_document",
+            reason_detail="document must be a list",
+            sample_text=None,
+            severity="skip",
+        )
+        return []
+    rows: list[dict[str, Any]] = []
+    for index, document in enumerate(documents):
+        if not isinstance(document, dict):
+            if allowed_record_ids is not None:
+                continue
+            recorder.add(
+                dataset="nikl_spoken",
+                split=split,
+                file_path=str(file_path),
+                record_id=f"{file_path.stem}:{index}",
+                reason_code="invalid_document",
+                reason_detail="document item must be an object",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        record_id = str(document.get("id") or f"{file_path.stem}:{index}")
+        if allowed_record_ids is not None and record_id not in allowed_record_ids:
+            continue
+        utterances = document.get("utterance")
+        if not isinstance(utterances, list):
+            recorder.add(
+                dataset="nikl_spoken",
+                split=split,
+                file_path=str(file_path),
+                record_id=record_id,
+                reason_code="missing_utterance",
+                reason_detail="document.utterance must be a list",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        valid_forms: list[str] = []
+        skipped_utterance_events: list[QualityEvent] = []
+        for utterance_index, utterance in enumerate(utterances):
+            form_value = utterance.get("form") if isinstance(utterance, dict) else None
+            form_text = strip_text(form_value)
+            if form_text is not None:
+                valid_forms.append(form_text)
+                continue
+            skipped_utterance_events.append(
+                QualityEvent(
+                    dataset="nikl_spoken",
+                    split=split,
+                    file_path=str(file_path),
+                    record_id=record_id,
+                    reason_code="skip_utterance",
+                    reason_detail=f"utterance[{utterance_index}].form missing or empty",
+                    sample_text=truncate_sample(form_value) if isinstance(form_value, str) else None,
+                    severity="skip",
+                )
+            )
+        if not valid_forms:
+            recorder.extend(skipped_utterance_events)
+            recorder.add(
+                dataset="nikl_spoken",
+                split=split,
+                file_path=str(file_path),
+                record_id=record_id,
+                reason_code="empty_utterances",
+                reason_detail="no usable utterance.form remained after normalization",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        if skipped_utterance_events:
+            recorder.extend(
+                [
+                    QualityEvent(
+                        dataset=event.dataset,
+                        split=event.split,
+                        file_path=event.file_path,
+                        record_id=event.record_id,
+                        reason_code=event.reason_code,
+                        reason_detail=event.reason_detail,
+                        sample_text=event.sample_text,
+                        severity="fixup",
+                    )
+                    for event in skipped_utterance_events
+                ]
+            )
+        rows.append(
+            make_row(
+                source=DATASET_SPECS["nikl_spoken"].source,
+                split=split,
+                content="\n".join(valid_forms),
+                messages=None,
+            )
+        )
+    return rows
+
+
+def _process_nikl_written(
+    split: str,
+    file_path: Path,
+    obj: dict[str, Any],
+    recorder: QualityRecorder,
+    selected_record_ids: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    allowed_record_ids = set(selected_record_ids) if selected_record_ids is not None else None
+    documents = obj.get("document")
+    if not isinstance(documents, list):
+        recorder.add(
+            dataset="nikl_written",
+            split=split,
+            file_path=str(file_path),
+            record_id=None,
+            reason_code="missing_document",
+            reason_detail="document must be a list",
+            sample_text=None,
+            severity="skip",
+        )
+        return []
+    rows: list[dict[str, Any]] = []
+    for index, document in enumerate(documents):
+        if not isinstance(document, dict):
+            if allowed_record_ids is not None:
+                continue
+            recorder.add(
+                dataset="nikl_written",
+                split=split,
+                file_path=str(file_path),
+                record_id=f"{file_path.stem}:{index}",
+                reason_code="invalid_document",
+                reason_detail="document item must be an object",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        record_id = str(document.get("id") or f"{file_path.stem}:{index}")
+        if allowed_record_ids is not None and record_id not in allowed_record_ids:
+            continue
+        metadata = document.get("metadata")
+        title = strip_text(metadata.get("title") if isinstance(metadata, dict) else None)
+        if title is None:
+            recorder.add(
+                dataset="nikl_written",
+                split=split,
+                file_path=str(file_path),
+                record_id=record_id,
+                reason_code="missing_title",
+                reason_detail="document.metadata.title must be a non-empty string",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        paragraphs = document.get("paragraph")
+        if not isinstance(paragraphs, list):
+            recorder.add(
+                dataset="nikl_written",
+                split=split,
+                file_path=str(file_path),
+                record_id=record_id,
+                reason_code="missing_paragraph",
+                reason_detail="document.paragraph must be a list",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        valid_forms: list[str] = []
+        skipped_paragraph_events: list[QualityEvent] = []
+        for paragraph_index, paragraph in enumerate(paragraphs):
+            form_value = paragraph.get("form") if isinstance(paragraph, dict) else None
+            form_text = strip_text(form_value)
+            if form_text is not None:
+                valid_forms.append(form_text)
+                continue
+            skipped_paragraph_events.append(
+                QualityEvent(
+                    dataset="nikl_written",
+                    split=split,
+                    file_path=str(file_path),
+                    record_id=record_id,
+                    reason_code="skip_paragraph",
+                    reason_detail=f"paragraph[{paragraph_index}].form missing or empty",
+                    sample_text=truncate_sample(form_value) if isinstance(form_value, str) else None,
+                    severity="skip",
+                )
+            )
+        if not valid_forms:
+            recorder.extend(skipped_paragraph_events)
+            recorder.add(
+                dataset="nikl_written",
+                split=split,
+                file_path=str(file_path),
+                record_id=record_id,
+                reason_code="empty_paragraphs",
+                reason_detail="no usable paragraph.form remained after normalization",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        if skipped_paragraph_events:
+            recorder.extend(
+                [
+                    QualityEvent(
+                        dataset=event.dataset,
+                        split=event.split,
+                        file_path=event.file_path,
+                        record_id=event.record_id,
+                        reason_code=event.reason_code,
+                        reason_detail=event.reason_detail,
+                        sample_text=event.sample_text,
+                        severity="fixup",
+                    )
+                    for event in skipped_paragraph_events
+                ]
+            )
+        rows.append(
+            make_row(
+                source=DATASET_SPECS["nikl_written"].source,
+                split=split,
+                content=f"제목: {title}\n내용: " + "\n".join(valid_forms),
+                messages=None,
+            )
+        )
+    return rows
 
 
 def _process_045(

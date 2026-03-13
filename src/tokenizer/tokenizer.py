@@ -40,6 +40,9 @@ INCLUDED_SOURCES: Tuple[str, ...] = (
     "021.용도별 목적대화 데이터",
     "023.국회 회의록 기반 지식검색 데이터",
     "030.웹데이터 기반 한국어 말뭉치 데이터",
+    "국립국어원 신문 말뭉치 2020",
+    "국립국어원 구어 말뭉치",
+    "NIKL_WRITTEN(v1.2)",
     "045.지식검색 대화",
     "046.공감형 대화",
     "141.한국어 멀티세션 대화",
@@ -604,6 +607,70 @@ def extract_from_json_obj(
                     sentence = block.get("sentence")
                     if isinstance(sentence, str):
                         yield sentence
+        return
+
+    if source == "국립국어원 신문 말뭉치 2020":
+        if not isinstance(obj, dict):
+            return
+        documents = obj.get("document")
+        if not isinstance(documents, list):
+            return
+        for document in documents:
+            if not isinstance(document, dict):
+                continue
+            paragraphs = document.get("paragraph")
+            if not isinstance(paragraphs, list):
+                continue
+            for paragraph in paragraphs:
+                if not isinstance(paragraph, dict):
+                    continue
+                form = paragraph.get("form")
+                if isinstance(form, str):
+                    yield form
+        return
+
+    if source == "국립국어원 구어 말뭉치":
+        if not isinstance(obj, dict):
+            return
+        documents = obj.get("document")
+        if not isinstance(documents, list):
+            return
+        for document in documents:
+            if not isinstance(document, dict):
+                continue
+            utterances = document.get("utterance")
+            if not isinstance(utterances, list):
+                continue
+            for utterance in utterances:
+                if not isinstance(utterance, dict):
+                    continue
+                form = utterance.get("form")
+                if isinstance(form, str):
+                    yield form
+        return
+
+    if source == "NIKL_WRITTEN(v1.2)":
+        if not isinstance(obj, dict):
+            return
+        documents = obj.get("document")
+        if not isinstance(documents, list):
+            return
+        for document in documents:
+            if not isinstance(document, dict):
+                continue
+            metadata = document.get("metadata")
+            title = metadata.get("title") if isinstance(metadata, dict) else None
+            if isinstance(title, str):
+                yield title
+            paragraphs = document.get("paragraph")
+            if not isinstance(paragraphs, list):
+                continue
+            for paragraph in paragraphs:
+                if not isinstance(paragraph, dict):
+                    continue
+                form = paragraph.get("form")
+                if isinstance(form, str):
+                    yield form
         return
 
     if source.startswith(("045.", "046.")):

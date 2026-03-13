@@ -228,7 +228,63 @@ quality report 필수 항목:
 - 제목이 비면 해당 제목 row 제외
 - `system = "당신은 기사를 읽고 제목을 짓습니다. 내용을 요약하고, 사람들의 눈길을 끄는 제목을 작성합니다."`
 
-## 11. 045.지식검색 대화
+## 11. 국립국어원 신문 말뭉치 2020
+- 입력은 원본 디렉터리 아래 `*.json` 전체다.
+- 원본 row 단위는 JSON 파일 1개가 아니라 `document[*]` 기사 1개다.
+- 별도 Training/Validation 디렉터리가 없으므로 유효 `document` row를 self-split 한다.
+- split 구성은 `document` 기준 `90:10`으로 둔다.
+- canonical split key는 `document.id`, 없으면 `{file_stem}:{document_index}`를 사용한다.
+- split 할당은 `sha256(source + "\t" + split_key)` 기준으로 정렬한 뒤 앞 `floor(n * 0.9)`개를 train, 나머지를 val로 둔다.
+- `n == 1`이면 유일한 row는 train으로 둔다.
+- split 계산은 정규화 후 최종 row 후보 집합 기준으로 수행한다.
+- 상위 `metadata.title`과 `document.metadata.title`은 기사 제목이 아니라 코퍼스/매체 메타정보로 보고 기본 학습 입력에서 사용하지 않는다.
+- `document[*].paragraph[*].form`를 strip 후 수집한다.
+- 유효한 `paragraph.form` 중 첫 번째를 기사 제목으로 사용한다.
+- 첫 번째를 제외한 나머지 유효 `paragraph.form`들을 원순서대로 줄바꿈 `\n` 하나로 이어 붙여 기사 본문을 만든다.
+- `content = "제목: " + title + "\n내용: " + body`
+- `messages = null`
+- `document.paragraph`가 배열이 아니면 해당 `document`는 제외한다.
+- 유효 문단이 하나도 없으면 해당 `document`는 제외한다.
+- 제목만 있고 본문 문단이 하나도 없으면 해당 `document`는 제외한다.
+- `document.metadata.author`, `publisher`, `date`, `topic`, `original_topic`과 파일 상위 `metadata`는 기본 학습 입력에서 사용하지 않는다.
+
+## 12. 국립국어원 구어 말뭉치
+- 입력은 원본 디렉터리 아래 `*.json` 전체다.
+- 원본 row 단위는 JSON 파일 1개가 아니라 `document[*]` 발화 묶음 1개다.
+- 별도 Training/Validation 디렉터리가 없으므로 유효 `document` row를 self-split 한다.
+- split 구성은 `document` 기준 `90:10`으로 둔다.
+- canonical split key는 `document.id`, 없으면 `{file_stem}:{document_index}`를 사용한다.
+- split 할당은 `sha256(source + "\t" + split_key)` 기준으로 정렬한 뒤 앞 `floor(n * 0.9)`개를 train, 나머지를 val로 둔다.
+- `n == 1`이면 유일한 row는 train으로 둔다.
+- split 계산은 정규화 후 최종 row 후보 집합 기준으로 수행한다.
+- `document[*].utterance[*].form`를 strip 후 원순서대로 수집한다.
+- 유효한 `utterance.form`들을 줄바꿈 `\n` 하나로 이어 붙여 `content`를 만든다.
+- `messages = null`
+- 상위 `document`가 배열이 아니면 해당 JSON은 제외한다.
+- `document[*].utterance`가 배열이 아니면 해당 `document`는 제외한다.
+- 유효한 `utterance.form`이 하나도 없으면 해당 `document`는 제외한다.
+- `document.metadata.title`, `author`, `publisher`, `date`, `topic`, `speaker`와 파일 상위 `metadata`, `utterance.original_form`, `speaker_id`, `note`는 기본 학습 입력에서 사용하지 않는다.
+
+## 13. 국립국어원 문어 말뭉치
+- 입력은 원본 디렉터리 아래 `*.json` 전체다.
+- 원본 row 단위는 JSON 파일 1개가 아니라 `document[*]` 문서 1개다.
+- 별도 Training/Validation 디렉터리가 없으므로 유효 `document` row를 self-split 한다.
+- split 구성은 `document` 기준 `90:10`으로 둔다.
+- canonical split key는 `document.id`, 없으면 `{file_stem}:{document_index}`를 사용한다.
+- split 할당은 `sha256(source + "\t" + split_key)` 기준으로 정렬한 뒤 앞 `floor(n * 0.9)`개를 train, 나머지를 val로 둔다.
+- `n == 1`이면 유일한 row는 train으로 둔다.
+- split 계산은 정규화 후 최종 row 후보 집합 기준으로 수행한다.
+- `document.metadata.title`을 strip 후 제목으로 사용한다.
+- `document[*].paragraph[*].form`를 strip 후 수집한다.
+- 유효한 `paragraph.form`들을 원순서대로 줄바꿈 `\n` 하나로 이어 붙여 본문을 만든다.
+- `content = "제목: " + title + "\n내용: " + body`
+- `messages = null`
+- `document.metadata.title`이 비면 해당 `document`는 제외한다.
+- `document.paragraph`가 배열이 아니면 해당 `document`는 제외한다.
+- 유효 문단이 하나도 없으면 해당 `document`는 제외한다.
+- `document.metadata.author`, `publisher`, `date`와 파일 상위 `metadata`, `paragraph.id`는 기본 학습 입력에서 사용하지 않는다.
+
+## 14. 045.지식검색 대화
 - 원본 JSON 한 건이 row 단위다.
 - role 매핑: `질문자 -> user`, `전문가 -> assistant`
 - assistant는 항상 전문가의 `text`를 사용한다.
@@ -238,7 +294,7 @@ quality report 필수 항목:
 - `search_URL`, `search_query`, `reference_date`, `info.evaluation`, `votes`는 사용하지 않는다.
 - `system = "user의 질문에 대해서 텍스트 근거 기반으로 대답을 하는 전문가야"`
 
-## 12. 046.공감형 대화
+## 15. 046.공감형 대화
 - 원본 JSON 한 건이 row 단위다.
 - role 매핑: `speaker -> user`, `listener -> assistant`
 - 정규화 규칙은 빈 turn 제외, 시작 role 검사, role 교대 검사, 마지막 user 제거 규칙을 따른다.
@@ -247,7 +303,7 @@ quality report 필수 항목:
 - `content`는 system 제외 user/assistant text 공백 결합이다.
 - `info.evaluation`, `listener_empathy`, `speaker_changeEmotion`, `votes`는 사용하지 않는다.
 
-## 13. 141.한국어 멀티세션 대화
+## 16. 141.한국어 멀티세션 대화
 - role 매핑: `speaker1 -> user`, `speaker2 -> assistant`
 - 세션 정규화는 2장의 멀티세션 공통 규칙을 따른다.
 - base system 문장은 `"당신은 사용자의 대화 상대로서 친절하고 긍정적으로 반응합니다."`
@@ -256,7 +312,7 @@ quality report 필수 항목:
 - `content`는 system 제외 user/assistant text 공백 결합이다.
 - `topicInfo`, `summary`, `date/time`은 사용하지 않는다.
 
-## 14. gsm8k
+## 17. gsm8k
 - 입력은 `data/korean_raw/gsm8k/train-00000-of-00001.parquet`, `data/korean_raw/gsm8k/test-00000-of-00001.parquet`다.
 - split 매핑은 `train parquet -> train`, `test parquet -> val`로 둔다.
 - 원본 row 단위는 parquet row 1개다.
@@ -268,7 +324,7 @@ quality report 필수 항목:
 - `question_en`, `answer_en`는 기본 학습 입력에서 사용하지 않는다.
 - `system = "당신은 수학 문제를 입력받으면 문제 풀이 과정을 포함하여 정답을 출력합니다."`
 
-## 15. novel24
+## 18. novel24
 - 입력은 `data/korean_raw/novel24/*.txt`다.
 - 숨김 파일과 `.DS_Store`는 제외한다.
 - txt 파일 묶음을 안정적인 순서로 정렬한 뒤 앞 90%를 train, 뒤 10%를 val로 나눈다.
@@ -280,14 +336,14 @@ quality report 필수 항목:
 
 ---
 
-## 16. 구현 순서
+## 19. 구현 순서
 1. 공통 스키마, 직렬화, `token_count`, Lance append 절차를 구현한다.
 2. `009/010/011/141` 멀티세션 계열 adapter를 구현한다.
-3. `019/020/021/023/030/045/046/gsm8k` adapter를 dataset별 규칙에 맞게 구현한다.
+3. `019/020/021/023/030/국립국어원 신문 말뭉치 2020/국립국어원 구어 말뭉치/국립국어원 문어 말뭉치/045/046/gsm8k` adapter와 self-split 규칙을 dataset별 규칙에 맞게 구현한다.
 4. `novel24` txt 분할 adapter를 구현한다.
 5. dataset별 결과를 같은 Lance 저장소에 append한다.
 
-## 17. 수용 기준
+## 20. 수용 기준
 1. 모든 dataset 계획이 최신 personal 문서와 논리적으로 충돌하지 않는다.
 2. 각 데이터셋 규칙만 보고 입력 경로, row 단위, `content/messages`, `token_count`, 품질 규칙을 바로 구현할 수 있다.
 3. 모든 데이터셋 결과가 같은 5-feature 스키마로 append 가능하다.
