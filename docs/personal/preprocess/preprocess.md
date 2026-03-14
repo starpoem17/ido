@@ -5,13 +5,19 @@
 <|eot_id|> : end of turn. 전체 종료X. 한 화자의 발언 종료.
 <|pad|> : 배치 내에서 가장 긴 텍스트의 길이에 맞춰 짧은 텍스트의 빈 공간 패딩. 학습 시에는 짧은 문장의 오른쪽을 패딩한다. 이후 추론 서비스 시에는 왼쪽을 패딩한다(다수 사용자의 쿼리를 동시 처리할 때)
 
-데이터 feature 5개
+데이터 feature 6개
 
 source : String
     ex)
     "009.전문분야_기술과학_한국어 멀티세션 데이터"
     "gsm8k"
     "novel24"
+
+data_usage : String
+    ex)
+    "PT",
+    "SFT",
+    "REASONING"
 
 split : String
     ex)
@@ -49,6 +55,7 @@ lance 데이터 예시
 ex)
 {
     "source" : "045.지식검색 대화",
+    "data_usage" : "SFT",
     "split" : "train",
     "content" : "임진왜란이 언제 일어났는지 알려줘. 임진왜란은 선조 25년, 기원후 1592년에 발발했습니다.",
     "messages" : [
@@ -61,6 +68,7 @@ ex)
 
 {
     "source" : "novel24",
+    "data_usage" : "PT",
     "split" : "train",
     "content" : "...",
     "messages" : null,
@@ -70,3 +78,5 @@ ex)
 보다 구체적인 데이터 종류별 포맷은 docs/personal/preprocess 안의 md 파일들을 참조하여 확인한다
 
 각 데이터 종류별로 전처리를 진행하고 lance에 append하는 방식으로 하나의 lance 데이터셋에 전체 데이터를 정리한다
+
+token_count = null인 상태의 parquet 데이터를 먼저 생성한다. parquet를 바탕으로 토크나이저를 생성한다. 토크나이저 생성 이후 lance 데이터셋 구축 과정에서 token_count 필드를 채운다. lance 데이터셋 구축 시 샤딩을 진행하는데 샤드 하나의 크기는 1gb로 설정한다. row append 과정에서 1gb가 초과되면 해당 row까지만 추가하고 다음 row부터는 새로운 샤드를 추가한다.
