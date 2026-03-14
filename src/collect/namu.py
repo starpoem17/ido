@@ -17,10 +17,15 @@ from tqdm import tqdm
 # User configuration block
 # =========================
 TARGET_URLS = [
-    "https://namu.wiki/w/태평양 전쟁",
+    "https://namu.wiki/w/아킬레우스",
 ]
 EXCLUDED_TITLE_SUBSTRINGS = [  # 수집하지 않을 목차/하위 문서 제목
     "관련 문서",
+    "영상",
+    "같이보기",
+    "대중문화",
+    "기관",
+    "인터넷",
     "관련 자료",
     "작품",
     "유명인",
@@ -75,9 +80,12 @@ PARAGRAPH_SEPARATOR = "\n\n"
 SECTION_PATH_SEPARATOR = "."
 OUTPUT_JSON_INDENT = 2
 OUTPUT_JSON_ENSURE_ASCII = False
-ROW_SPLIT = None
+ROW_SOURCE_PREFIX = "namu"
+ROW_DATA_USAGE = "PT"
+ROW_SPLIT = "train"
 ROW_MESSAGES = None
 ROW_TOKEN_COUNT = None
+MIN_CONTENT_LENGTH = 100  # 100자 이하면 저장하지 않음
 VERBOSE = True
 LOG_PREFIX = "[namu]"
 CONTINUE_ON_SUBPAGE_ERROR = True
@@ -177,6 +185,7 @@ class DocumentResult:
     excluded_paragraph_count: int
     text_skipped_count: int
     kept_paragraph_count: int
+    length_filtered_count: int
     excluded_section_titles: list[str]
 
 
@@ -584,12 +593,22 @@ def clean_paragraphs(
     return cleaned, skipped
 
 
+def split_source_title_parts(title: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in title.split("/") if part.strip())
+
+
 def build_section_source(title: str, section_path_titles: tuple[str, ...]) -> str:
-    if not INCLUDE_SECTION_PATH_HEADERS:
-        return title
-    if not section_path_titles:
-        return title
-    return SECTION_PATH_SEPARATOR.join((title, *section_path_titles))
+    source_parts = [ROW_SOURCE_PREFIX, *split_source_title_parts(title)]
+    if INCLUDE_SECTION_PATH_HEADERS:
+        source_parts.extend(section_path_titles)
+    return SECTION_PATH_SEPARATOR.join(source_parts)
+
+
+def build_content_prefix_from_source(source: str) -> str:
+    prefix = f"{ROW_SOURCE_PREFIX}{SECTION_PATH_SEPARATOR}"
+    if source.startswith(prefix):
+        return source[len(prefix) :].strip()
+    return source.strip()
 
 
 def group_paragraphs_by_section(
@@ -607,30 +626,41 @@ def group_paragraphs_by_section(
     return blocks
 
 
-def build_json_rows_from_blocks(blocks: list[SectionBlock]) -> list[dict[str, Any]]:
+def build_json_rows_from_blocks(
+    blocks: list[SectionBlock],
+) -> tuple[list[dict[str, Any]], int]:
     rows: list[dict[str, Any]] = []
+    length_filtered = 0
     for block in blocks:
         body = PARAGRAPH_SEPARATOR.join(block.paragraphs).strip()
         if not body:
             continue
+        if len(body) <= MIN_CONTENT_LENGTH:
+            length_filtered += 1
+            continue
+        content_prefix = build_content_prefix_from_source(block.source)
+        content = f"{content_prefix}. {body}" if content_prefix else body
         rows.append(
             {
                 "source": block.source,
+                "data_usage": ROW_DATA_USAGE,
                 "split": ROW_SPLIT,
-                "content": body,
+                "content": content,
                 "messages": ROW_MESSAGES,
                 "token_count": ROW_TOKEN_COUNT,
             }
         )
-    return rows
+    return rows, length_filtered
 
 
-def build_document_rows(title: str, paragraphs: list[ParagraphRecord]) -> list[dict[str, Any]]:
+def build_document_rows(
+    title: str, paragraphs: list[ParagraphRecord]
+) -> tuple[list[dict[str, Any]], int]:
     blocks = group_paragraphs_by_section(title, paragraphs)
-    rows = build_json_rows_from_blocks(blocks)
+    rows, length_filtered = build_json_rows_from_blocks(blocks)
     if not rows:
         raise ValueError("no body text remained after filtering")
-    return rows
+    return rows, length_filtered
 
 
 def build_combined_rows(documents: list[DocumentResult]) -> list[dict[str, Any]]:
@@ -670,15 +700,19 @@ def collect_document(url: str, html: str | None = None) -> tuple[DocumentResult,
         html = fetch_html(url)
     parse_result = parse_document(html)
     cleaned_paragraphs, skipped_count = clean_paragraphs(parse_result.paragraphs)
+    rows, length_filtered_count = build_document_rows(
+        parse_result.title, cleaned_paragraphs
+    )
     return (
         DocumentResult(
             url=url,
             title=parse_result.title,
-            rows=build_document_rows(parse_result.title, cleaned_paragraphs),
+            rows=rows,
             raw_paragraph_count=parse_result.raw_paragraph_count,
             excluded_paragraph_count=parse_result.excluded_paragraph_count,
             text_skipped_count=skipped_count,
             kept_paragraph_count=len(cleaned_paragraphs),
+            length_filtered_count=length_filtered_count,
             excluded_section_titles=parse_result.excluded_section_titles,
         ),
         html,
@@ -689,7 +723,7 @@ def log_document_result(document: DocumentResult) -> None:
     log(
         (
             "document url=%s title=%s raw_paragraphs=%d section_excluded=%d "
-            "text_skipped=%d kept=%d excluded_sections=%s"
+            "text_skipped=%d kept=%d row_length_filtered=%d excluded_sections=%s"
         )
         % (
             document.url,
@@ -698,6 +732,7 @@ def log_document_result(document: DocumentResult) -> None:
             document.excluded_paragraph_count,
             document.text_skipped_count,
             document.kept_paragraph_count,
+            document.length_filtered_count,
             document.excluded_section_titles,
         )
     )
