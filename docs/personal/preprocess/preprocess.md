@@ -79,4 +79,16 @@ ex)
 
 각 데이터 종류별로 전처리를 진행하고 lance에 append하는 방식으로 하나의 lance 데이터셋에 전체 데이터를 정리한다
 
+split의 경우 99:1 비율로 train:val 데이터를 구성한다. data/korean_raw 안의 데이터를 보면 train, val로 이미 나눠진 데이터가 있고 그렇지 않은 데이터가 있는데 이들 모두 99:1 비율로 재구성한다. 1%의 val 데이터는 각 데이터 항목에서 랜덤으로 추출한다.
+
 token_count = null인 상태의 parquet 데이터를 먼저 생성한다. parquet를 바탕으로 토크나이저를 생성한다. 토크나이저 생성 이후 lance 데이터셋 구축 과정에서 token_count 필드를 채운다. lance 데이터셋 구축 시 샤딩을 진행하는데 샤드 하나의 크기는 1gb로 설정한다. row append 과정에서 1gb가 초과되면 해당 row까지만 추가하고 다음 row부터는 새로운 샤드를 추가한다.
+
+각 데이터 소스 별로 몇 개의 토큰이 있는지 통계를 남긴다. 이 경우 namu 데이터는 특수하게 처리하는데 구체적인 사항은 docs/personal/preprocess/namu.md 를 참조한다.
+
+### 파이프라인
+- data/korean_raw 안의 데이터를 통일된 형식의 parquet 파일로 변환한다. 구체적인 변환 전략은 docs/personal/preprocess 안의 문서들을 참조한다.
+- exact dedup으로 완전히 동일한 content 필드를 갖는 행을 제거한다.
+- minhash + lsh 로 중복 후보를 제거한다.
+- 중복이 제거된 데이터를 활용해 토크나이저를 빌드한다. 토크나이저의 사전 크기는 48k를 디폴트로 한다
+- 토크나이저 빌드 이후 비어있는 token_count 필드를 채워넣는다. token_count 필드 안의 값은 content 필드의 텍스트 토큰 길이를 기준으로 한다.
+- 이후 각 데이터 항목 별로 lance 데이터셋을 구축한 뒤 append하여 LLM 학습에 사용할 최종 lancedb를 완성한다

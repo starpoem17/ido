@@ -17,13 +17,20 @@ from tqdm import tqdm
 # User configuration block
 # =========================
 TARGET_URLS = [
-    "https://namu.wiki/w/아킬레우스",
+    "https://namu.wiki/w/앙투안 베크렐",
 ]
 EXCLUDED_TITLE_SUBSTRINGS = [  # 수집하지 않을 목차/하위 문서 제목
     "관련 문서",
+    "갤러리",
+    "패러디",
+    "애니",
+    "캐릭터",
+    "동호인",
+    "영화",
     "영상",
     "같이보기",
     "대중문화",
+    "대중 문화",
     "기관",
     "인터넷",
     "관련 자료",
@@ -70,6 +77,7 @@ EXCLUDED_TITLE_SUBSTRINGS = [  # 수집하지 않을 목차/하위 문서 제목
 ]
 FOLLOW_TOC_SUBPAGES = True
 MAX_TOC_LINK_DEPTH = 1
+FOLLOW_ALL_TOC_WIKI_LINKS = True
 ALLOW_SUBDOC_PATH_PREFIX_ONLY = True
 INCLUDE_SECTION_PATH_HEADERS = True
 OUTPUT_DIR = Path("data/korean_raw/namu")
@@ -261,6 +269,8 @@ def is_subpage_url(main_url: str, candidate_url: str) -> bool:
     candidate_path = unquote(urlparse(candidate_url).path.rstrip("/"))
     if candidate_path == main_path:
         return False
+    if FOLLOW_ALL_TOC_WIKI_LINKS:
+        return True
     if not ALLOW_SUBDOC_PATH_PREFIX_ONLY:
         return True
     return candidate_path.startswith(f"{main_path}/")

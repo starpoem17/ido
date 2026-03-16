@@ -61,6 +61,6 @@ ex)
 
     이서준은 생각했다. 너무 크다.",
     "messages" : null,
-    "token_count" : 123
+    "token_count" : null
 }
 

@@ -18,7 +18,7 @@ ex)
         나탈리아는 4월과 5월에 48+24 = <<48+24=72>>72 클립을 총 판매했습니다.
         #### 72"},
     ],
-    "token_count" : 123
+    "token_count" : null
 }
 
 PT 시에는 content 안의 내용을 사용하여 causal masking을 적용한 사전학습
