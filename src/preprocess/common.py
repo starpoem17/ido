@@ -36,7 +36,7 @@ MESSAGE_STRUCT = pa.struct(
     ]
 )
 
-CANONICAL_SCHEMA = pa.schema(
+FINAL_SCHEMA = pa.schema(
     [
         pa.field("source", pa.string(), nullable=False),
         pa.field("data_usage", pa.string(), nullable=False),
@@ -46,6 +46,19 @@ CANONICAL_SCHEMA = pa.schema(
         pa.field("token_count", pa.int32(), nullable=False),
     ]
 )
+
+STAGING_SCHEMA = pa.schema(
+    [
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("data_usage", pa.string(), nullable=False),
+        pa.field("split", pa.string(), nullable=False),
+        pa.field("content", pa.string(), nullable=True),
+        pa.field("messages", pa.list_(MESSAGE_STRUCT), nullable=True),
+        pa.field("token_count", pa.int32(), nullable=True),
+    ]
+)
+
+CANONICAL_SCHEMA = FINAL_SCHEMA
 
 ALLOWED_SPLITS = {"train", "val"}
 ALLOWED_DATA_USAGES = {"PT", "SFT", "REASONING"}
@@ -194,7 +207,10 @@ def validate_row(row: dict[str, Any]) -> None:
 
 
 def rows_to_table(rows: Sequence[dict[str, Any]]) -> pa.Table:
-    return pa.Table.from_pylist(list(rows), schema=CANONICAL_SCHEMA)
+    schema = FINAL_SCHEMA
+    if any(row.get("token_count") is None for row in rows):
+        schema = STAGING_SCHEMA
+    return pa.Table.from_pylist(list(rows), schema=schema)
 
 
 def ensure_parent_dir(path: Path) -> None:

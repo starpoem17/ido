@@ -2,15 +2,10 @@ from __future__ import annotations
 
 import sys
 import unittest
-from unittest.mock import patch
+from pathlib import Path
 
 from src.preprocess import common
-from src.preprocess.dataset_specs import (
-    assign_self_split_records,
-    clean_annotations_text_for_021,
-    chunk_novel24_text,
-    split_novel24_files,
-)
+from src.preprocess.dataset_specs import assign_split_records
 
 
 class PreprocessCoreTests(unittest.TestCase):
@@ -32,32 +27,29 @@ class PreprocessCoreTests(unittest.TestCase):
         finally:
             bar.close()
 
-    def test_clean_annotations_text_for_021(self) -> None:
-        raw = "A. 안녕하세요  \n\n B : 문의 드립니다   \nA. 네 도와드리겠습니다"
-        cleaned = clean_annotations_text_for_021(raw)
-        self.assertEqual(cleaned, "안녕하세요\n문의 드립니다\n네 도와드리겠습니다")
+    def test_rows_to_table_uses_staging_schema_when_token_count_is_null(self) -> None:
+        table = common.rows_to_table(
+            [
+                {
+                    "source": "src",
+                    "data_usage": "PT",
+                    "split": "train",
+                    "content": "본문",
+                    "messages": None,
+                    "token_count": None,
+                }
+            ]
+        )
+        self.assertEqual(table.schema, common.STAGING_SCHEMA)
+        self.assertIsNone(table.to_pylist()[0]["token_count"])
 
-    def test_split_novel24_files(self) -> None:
-        from pathlib import Path
-
-        files = [Path(f"f{i}.txt") for i in range(10)]
-        train, val = split_novel24_files(files)
-        self.assertEqual(len(train), 9)
-        self.assertEqual(len(val), 1)
-        self.assertTrue(files[-1] in val)
-
-    def test_chunk_novel24_text_preserves_lines(self) -> None:
-        text = "첫 줄\n둘째 줄\n셋째 줄"
-        with patch("src.preprocess.common.compute_token_count", return_value=3):
-            chunks = chunk_novel24_text(text)
-        self.assertEqual(chunks, ["첫 줄\n둘째 줄\n셋째 줄"])
-
-    def test_assign_self_split_records_is_stable_and_exact(self) -> None:
-        from pathlib import Path
-
-        candidates = [(f"doc-{index}", Path(f"f{index}.json")) for index in range(11)]
-        first = assign_self_split_records(source="국립국어원 구어 말뭉치", candidates=candidates)
-        second = assign_self_split_records(source="국립국어원 구어 말뭉치", candidates=list(reversed(candidates)))
+    def test_assign_split_records_is_stable_and_uses_one_percent_val(self) -> None:
+        candidates = [
+            (f"doc-{index}", f"split-{index}", Path(f"f{index}.json"))
+            for index in range(101)
+        ]
+        first = assign_split_records(source="novel24", candidates=candidates)
+        second = assign_split_records(source="novel24", candidates=list(reversed(candidates)))
         first_train = {
             record_id
             for record_ids in first["train"].values()
@@ -78,8 +70,8 @@ class PreprocessCoreTests(unittest.TestCase):
             for record_ids in second["val"].values()
             for record_id in record_ids
         }
-        self.assertEqual(len(first_train), 9)
-        self.assertEqual(len(first_val), 2)
+        self.assertEqual(len(first_train), 100)
+        self.assertEqual(len(first_val), 1)
         self.assertSetEqual(first_train, second_train)
         self.assertSetEqual(first_val, second_val)
         self.assertTrue(first_train.isdisjoint(first_val))

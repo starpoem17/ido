@@ -1,72 +1,30 @@
-# novel24 전처리 의사코드
+# novel24 전처리 스도코드
 
 ## 목적
-이 문서는 `data/korean_raw/novel24/*.txt`를 `docs/personal/preprocess/novel24.md`의 예시 형태 그대로 Lance row로 만드는 절차를 자연어로 설명한다.
-이 데이터셋에서 Lance에 저장되는 row는 PT용 `content`만 가지며, `messages`는 항상 `null`이다.
+`novel24`를 PT용 canonical parquet row로 만들고 Lance 업로드 규칙을 적는다.
 
 ## 고정값
-구현할 때는 아래 값을 그대로 사용한다.
+1. `source = "novel24"`
+2. `data_usage = "PT"`
+3. `messages = null`
+4. 입력 경로는 `data/korean_raw/novel24/*.txt`
+5. 한 txt 파일 내부는 train/val로 나누지 않는다.
 
-1. `source`는 `"novel24"`로 둔다.
-2. 입력 파일은 `data/korean_raw/novel24/*.txt`에서 찾는다.
-3. 숨김 파일과 `.DS_Store`는 읽지 않는다.
-4. 한 row의 `token_count`는 `1024`를 넘으면 안 된다.
+## parquet 생성 규칙
+1. 숨김 파일과 `.DS_Store`를 제외한 txt 파일 목록을 수집한다.
+2. 파일 단위 `split_key`는 `file_stem`을 사용한다.
+3. 최종 split은 파일 단위로 99:1 helper를 적용하고, 같은 파일의 모든 chunk는 같은 split을 가진다.
+4. txt 내용은 줄 단위로 읽는다.
+5. 줄을 누적해 하나의 chunk를 만든다.
+6. 줄 중간이나 문장 중간은 자르지 않는다.
+7. chunk가 비어 있지 않으면 `content`로 저장한다.
 
-## 입력 파일 탐색 절차
-구현할 때는 아래 순서를 따른다.
+## Lance 업로드 규칙
+1. minhash dedup 완료 parquet에서 `source == novel24` row만 읽는다.
+2. 최종 tokenizer로 `content` 기준 `token_count`를 채운다.
+3. source별 Lance dataset으로 저장한다.
 
-1. `*.txt` 파일을 찾는다.
-2. 경로를 정렬한다.
-3. 파일명 앞이 `.`로 시작하면 제외한다.
-4. 파일명이 `.DS_Store`면 제외한다.
-5. 남은 txt 파일만 순서대로 사용한다.
-
-## split 구성 절차
-personal 문서의 규칙은 txt 파일 뭉치를 90:10으로 나누라는 뜻이다.
-따라서 구현할 때는 아래 순서를 따른다.
-
-1. 정렬된 txt 파일 목록의 총 개수를 `n`으로 둔다.
-2. `n == 1`이면 그 파일은 `train`으로 둔다.
-3. `n >= 2`이면 앞 90% 파일은 `train`, 뒤 10% 파일은 `val`로 둔다.
-4. 파일 하나 안의 텍스트를 다시 90:10으로 나누지 않는다.
-5. 같은 txt 파일에서 나온 row는 모두 같은 split을 사용한다.
-
-## 텍스트 분할 절차
-personal 문서의 규칙은 줄 경계 `\n`를 기준으로만 자르라는 뜻이다.
-따라서 구현할 때는 아래 순서를 따른다.
-
-1. txt 파일을 읽는다.
-2. 줄바꿈은 모두 `\n`으로 통일한다.
-3. 전체 텍스트를 `\n` 기준으로 줄 목록으로 만든다.
-4. 빈 줄도 그대로 유지한다.
-5. 현재 row에 줄을 하나씩 누적해 본다.
-6. 줄을 하나 더 넣은 후보 문자열의 `token_count`를 계산한다.
-7. 후보가 `1024` 이하면 현재 row에 그 줄을 포함한다.
-8. 후보가 `1024`를 넘으면, 직전까지 모인 줄들로 현재 row를 확정한다.
-9. 넘치게 만든 줄은 다음 row의 시작 줄로 넘긴다.
-10. 문장 중간이나 줄 중간은 절대 자르지 않는다.
-
-## 예외 처리
-구현할 때는 아래 경우를 품질 이벤트로 남긴다.
-
-1. txt 파일을 읽지 못한 경우
-2. 한 줄 자체가 단독으로도 `1024` 토큰을 넘는 경우
-3. 분할 결과가 공백만 있는 청크가 된 경우
-
-한 줄 자체가 `1024` 토큰을 넘는 경우에는 그 줄은 건너뛰고 다음 줄부터 계속 처리한다.
-
-## row 생성 절차
-확정된 텍스트 청크마다 아래 형태의 row 하나를 만든다.
-
-1. `source`는 `"novel24"`로 둔다.
-2. `split`은 파일에 할당된 split을 사용한다.
-3. `content`에는 현재 청크 문자열을 넣는다.
-4. `messages`는 `null`로 둔다.
-5. `token_count`는 현재 청크 문자열을 공통 토크나이저로 계산한 값으로 넣는다.
-
-## 구현 체크리스트
-1. txt 파일 묶음을 90:10으로 나누고 파일 내부를 다시 split하지 않는가
-2. 최종 row의 `messages`가 항상 `null`인가
-3. 줄 경계 `\n`만 기준으로 분할하는가
-4. 한 row의 `token_count`가 항상 `1024` 이하인가
-5. 문장 중간이나 줄 중간을 자르지 않는가
+## 품질 이벤트
+- txt read failure
+- empty chunk
+- chunking helper missing

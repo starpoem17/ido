@@ -19,7 +19,7 @@ from .common import (
     stable_sorted_paths,
     write_json,
 )
-from .dataset_specs import DATASET_SPECS, get_self_split_stats, process_file, resolve_input_files
+from .dataset_specs import DATASET_SPECS, get_split_plan_stats, process_file, resolve_input_files
 from .quality import QualityRecorder
 
 
@@ -58,7 +58,13 @@ def stage_dataset(config: StageConfig) -> None:
         f"[stage:{spec.dataset_id}:{config.target_split}] files={len(file_items)} workers={config.workers} shard_row_limit={config.shard_row_limit}"
     )
     recorder = QualityRecorder()
-    aggregate = Counter(input_files=0, output_rows=0, shard_files=0)
+    aggregate = Counter(
+        input_files=0,
+        raw_candidate_count=0,
+        valid_candidate_count=0,
+        output_rows=0,
+        shard_files=0,
+    )
     shard_rows: list[dict[str, Any]] = []
     shard_index = 1
     progress = progress_bar(total=len(file_items), desc=f"stage:{spec.dataset_id}:{config.target_split}")
@@ -97,19 +103,20 @@ def stage_dataset(config: StageConfig) -> None:
     recorder.write_jsonl(meta_root / f"quality_events_{config.target_split}.jsonl")
     quality_summary = recorder.to_summary()
     write_json(meta_root / f"quality_summary_{config.target_split}.json", quality_summary)
+    split_plan_stats = get_split_plan_stats(spec.dataset_id)
     stage_manifest = {
         "dataset_id": spec.dataset_id,
         "source": spec.source,
         "split": config.target_split,
         "generated_at": now_utc_iso(),
         "input_files": len(file_items),
+        "raw_candidate_count": aggregate["raw_candidate_count"],
+        "valid_candidate_count": aggregate["valid_candidate_count"],
         "output_rows": aggregate["output_rows"],
         "shard_files": aggregate["shard_files"],
         "quality_event_count": len(recorder.events),
+        "split_plan_stats": split_plan_stats,
     }
-    self_split_stats = get_self_split_stats(spec.dataset_id)
-    if self_split_stats is not None:
-        stage_manifest["self_split_stats"] = self_split_stats
     write_json(meta_root / f"stage_manifest_{config.target_split}.json", stage_manifest)
     log(
         f"[stage:{spec.dataset_id}:{config.target_split}] completed rows={aggregate['output_rows']} shards={aggregate['shard_files']} quality_events={len(recorder.events)}"

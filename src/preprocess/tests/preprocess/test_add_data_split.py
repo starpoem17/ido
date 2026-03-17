@@ -1,108 +1,54 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-
-from src.preprocess.add_data_usage import build_data_usage_column, rewrite_parquet_file, transform_table
+from src.preprocess.dataset_specs import process_file
 
 
-MESSAGE_TYPE = pa.list_(
-    pa.struct(
-        [
-            pa.field("content", pa.string(), nullable=False),
-            pa.field("role", pa.string(), nullable=False),
-        ]
-    )
-)
-
-
-class AddDataUsageTests(unittest.TestCase):
-    def test_build_data_usage_column_assigns_pt_sft_and_empty_list(self) -> None:
-        column, stats = build_data_usage_column(
-            [
-                None,
-                [],
-                [{"content": "u", "role": "user"}],
-            ]
-        )
-        self.assertEqual(column.to_pylist(), ["PT", "PT", "SFT"])
-        self.assertEqual(stats["total_rows"], 3)
-        self.assertEqual(stats["pt_rows"], 2)
-        self.assertEqual(stats["sft_rows"], 1)
-        self.assertEqual(stats["empty_messages_rows"], 1)
-
-    def test_transform_table_places_data_usage_after_source(self) -> None:
-        table = pa.Table.from_arrays(
-            [
-                pa.array(["src-a", "src-b"], type=pa.large_string()),
-                pa.array(["train", "train"], type=pa.large_string()),
-                pa.array(["c1", "c2"], type=pa.large_string()),
-                pa.array(
-                    [
-                        None,
-                        [{"content": "u", "role": "user"}],
-                    ],
-                    type=MESSAGE_TYPE,
-                ),
-                pa.array([1, 2], type=pa.int32()),
-            ],
-            names=["source", "split", "content", "messages", "token_count"],
-        )
-        transformed, stats = transform_table(table)
-        self.assertEqual(transformed.column_names[0], "source")
-        self.assertEqual(transformed.column_names[1], "data_usage")
-        self.assertEqual(transformed.column("data_usage").to_pylist(), ["PT", "SFT"])
-        self.assertEqual(stats["had_existing_data_usage"], 0)
-
-    def test_transform_table_overwrites_existing_data_usage(self) -> None:
-        table = pa.Table.from_arrays(
-            [
-                pa.array(["src-a"], type=pa.large_string()),
-                pa.array(["FT"], type=pa.large_string()),
-                pa.array(["train"], type=pa.large_string()),
-                pa.array(["c1"], type=pa.large_string()),
-                pa.array([None], type=MESSAGE_TYPE),
-                pa.array([1], type=pa.int32()),
-            ],
-            names=["source", "data_usage", "split", "content", "messages", "token_count"],
-        )
-        transformed, stats = transform_table(table)
-        self.assertEqual(transformed.column("data_usage").to_pylist(), ["PT"])
-        self.assertEqual(stats["had_existing_data_usage"], 1)
-
-    def test_rewrite_parquet_file_replaces_original(self) -> None:
+class ProcessFileSelectionTests(unittest.TestCase):
+    def test_process_file_filters_selected_record_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            path = Path(tmp_dir) / "part-000001.parquet"
-            table = pa.Table.from_arrays(
-                [
-                    pa.array(["src-a", "src-b"], type=pa.large_string()),
-                    pa.array(["train", "val"], type=pa.large_string()),
-                    pa.array(["c1", "c2"], type=pa.large_string()),
-                    pa.array(
-                        [
-                            None,
-                            [{"content": "a", "role": "assistant"}],
-                        ],
-                        type=MESSAGE_TYPE,
-                    ),
-                    pa.array([1, 2], type=pa.int32()),
-                ],
-                names=["source", "split", "content", "messages", "token_count"],
+            path = Path(tmp_dir) / "009.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "sessionInfo": [
+                            {
+                                "sessionID": "session-a",
+                                "dialog": [
+                                    {"speaker": "speaker1", "utterance": "질문 A"},
+                                    {"speaker": "speaker2", "utterance": "답변 A"},
+                                ],
+                            },
+                            {
+                                "sessionID": "session-b",
+                                "dialog": [
+                                    {"speaker": "speaker1", "utterance": "질문 B"},
+                                    {"speaker": "speaker2", "utterance": "답변 B"},
+                                ],
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
             )
-            pq.write_table(table, path)
-
-            result = rewrite_parquet_file(path)
-
-            rewritten = pq.read_table(path)
-            self.assertEqual(result["status"], "ok")
-            self.assertEqual(rewritten.column_names[0], "source")
-            self.assertEqual(rewritten.column_names[1], "data_usage")
-            self.assertEqual(rewritten.column("data_usage").to_pylist(), ["PT", "SFT"])
-            self.assertFalse(path.with_suffix(".parquet.tmp").exists())
+            rows, events, stats = process_file(
+                "009",
+                "val",
+                path,
+                selected_record_ids=("session-b",),
+            )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["split"], "val")
+        self.assertEqual(rows[0]["content"], "질문 B 답변 B")
+        self.assertEqual(stats["raw_candidate_count"], 2)
+        self.assertEqual(stats["valid_candidate_count"], 2)
+        self.assertEqual(stats["output_rows"], 1)
+        self.assertEqual(events, [])
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,8 +14,6 @@ import pyarrow.parquet as pq
 from .common import (
     build_content_from_messages,
     compact_spaces,
-    compute_token_count,
-    infer_data_usage,
     stable_sorted_paths,
     strip_text,
     truncate_sample,
@@ -24,227 +22,244 @@ from .quality import QualityEvent, QualityRecorder
 
 
 MULTI_SESSION_BASE_SYSTEM = "당신은 사용자의 대화 상대로서 친절하고 긍정적으로 반응합니다."
-ARTICLE_SYSTEM = "당신은 기사를 읽고 제목을 짓습니다. 내용을 요약하고, 사람들의 눈길을 끄는 제목을 작성합니다."
+MATH_REASONING_SYSTEM = "사용자의 질문을 읽고 단계 별로 사고하여 논리적인 답변을 제시합니다."
+TEXT_PREFIX_RE = re.compile(r"^\s*(?:[AB]|\d+)\s*[.:：]\s*")
 
 
 @dataclass(frozen=True)
 class DatasetSpec:
     dataset_id: str
     source: str
-    train_patterns: tuple[str, ...]
-    val_patterns: tuple[str, ...]
+    input_patterns: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class InputFileItem:
     split: str
     path: Path
-    selected_record_ids: tuple[str, ...] | None = None
+    selected_record_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class SelfSplitPlan:
+class DatasetSplitPlan:
     assignments: dict[str, dict[Path, tuple[str, ...]]]
     stats: dict[str, int]
+
+
+@dataclass(frozen=True)
+class BuiltRecord:
+    record_id: str
+    split_key: str
+    source: str
+    data_usage: str
+    content: str | None
+    messages: list[dict[str, str]] | None
+
+    def to_row(self, split: str) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "data_usage": self.data_usage,
+            "split": split,
+            "content": self.content,
+            "messages": self.messages,
+            "token_count": None,
+        }
 
 
 DATASET_SPECS: dict[str, DatasetSpec] = {
     "009": DatasetSpec(
         dataset_id="009",
         source="009.전문분야_기술과학_한국어 멀티세션 데이터",
-        train_patterns=(
+        input_patterns=(
             "data/korean_raw/009.전문분야_기술과학_한국어 멀티세션 데이터/3.개방데이터/1.데이터/Training/02.라벨링데이터/*.json",
-        ),
-        val_patterns=(
             "data/korean_raw/009.전문분야_기술과학_한국어 멀티세션 데이터/3.개방데이터/1.데이터/Validation/02.라벨링데이터/*.json",
         ),
     ),
     "010": DatasetSpec(
         dataset_id="010",
         source="010.전문분야_사회과학_한국어 멀티세션 데이터",
-        train_patterns=(
+        input_patterns=(
             "data/korean_raw/010.전문분야_사회과학_한국어 멀티세션 데이터/3.개방데이터/1.데이터/Training/02.라벨링데이터/*.json",
-        ),
-        val_patterns=(
             "data/korean_raw/010.전문분야_사회과학_한국어 멀티세션 데이터/3.개방데이터/1.데이터/Validation/02.라벨링데이터/*.json",
         ),
     ),
     "011": DatasetSpec(
         dataset_id="011",
         source="011.일상대화 한국어 멀티세션 데이터",
-        train_patterns=(
+        input_patterns=(
             "data/korean_raw/011.일상대화 한국어 멀티세션 데이터/3.개방데이터/1.데이터/Training/02.라벨링데이터/*.json",
-        ),
-        val_patterns=(
             "data/korean_raw/011.일상대화 한국어 멀티세션 데이터/3.개방데이터/1.데이터/Validation/02.라벨링데이터/*.json",
         ),
     ),
     "019": DatasetSpec(
         dataset_id="019",
         source="019.법률, 규정 (판결서, 약관 등) 텍스트 분석 데이터",
-        train_patterns=(
+        input_patterns=(
             "data/korean_raw/019.법률, 규정 (판결서, 약관 등) 텍스트 분석 데이터/01.데이터/1.Training/라벨링데이터_230510_add/**/*.json",
-        ),
-        val_patterns=(
             "data/korean_raw/019.법률, 규정 (판결서, 약관 등) 텍스트 분석 데이터/01.데이터/2.Validation/라벨링데이터_230510_add/**/*.json",
         ),
     ),
     "020": DatasetSpec(
         dataset_id="020",
         source="020.주제별 텍스트 일상 대화 데이터",
-        train_patterns=(
+        input_patterns=(
             "data/korean_raw/020.주제별 텍스트 일상 대화 데이터/01.데이터/1.Training/라벨링데이터/**/*.json",
-        ),
-        val_patterns=(
             "data/korean_raw/020.주제별 텍스트 일상 대화 데이터/01.데이터/2.Validation/라벨링데이터/**/*.json",
         ),
     ),
     "021": DatasetSpec(
         dataset_id="021",
         source="021.용도별 목적대화 데이터",
-        train_patterns=(
+        input_patterns=(
             "data/korean_raw/021.용도별 목적대화 데이터/01.데이터/1.Training/라벨링데이터/**/*.json",
-        ),
-        val_patterns=(
             "data/korean_raw/021.용도별 목적대화 데이터/01.데이터/2.Validation/라벨링데이터/**/*.json",
         ),
     ),
     "023": DatasetSpec(
         dataset_id="023",
         source="023.국회 회의록 기반 지식검색 데이터",
-        train_patterns=(
+        input_patterns=(
             "data/korean_raw/023.국회 회의록 기반 지식검색 데이터/3.개방데이터/1.데이터/Training/02.라벨링데이터/**/*.json",
-        ),
-        val_patterns=(
             "data/korean_raw/023.국회 회의록 기반 지식검색 데이터/3.개방데이터/1.데이터/Validation/02.라벨링데이터/**/*.json",
         ),
     ),
     "030": DatasetSpec(
         dataset_id="030",
         source="030.웹데이터 기반 한국어 말뭉치 데이터",
-        train_patterns=(
+        input_patterns=(
             "data/korean_raw/030.웹데이터 기반 한국어 말뭉치 데이터/01.데이터/1.Training/라벨링데이터/**/*.json",
-        ),
-        val_patterns=(
             "data/korean_raw/030.웹데이터 기반 한국어 말뭉치 데이터/01.데이터/2.Validation/라벨링데이터/**/*.json",
         ),
-    ),
-    "nikl_newspaper_2020": DatasetSpec(
-        dataset_id="nikl_newspaper_2020",
-        source="국립국어원 신문 말뭉치 2020",
-        train_patterns=(
-            "data/korean_raw/국립국어원 신문 말뭉치 2020/*.json",
-            "data/korean_raw/국립국어원 신문 말뭉치 2020(버전 1.1)/*.json",
-        ),
-        val_patterns=(),
-    ),
-    "nikl_spoken": DatasetSpec(
-        dataset_id="nikl_spoken",
-        source="국립국어원 구어 말뭉치",
-        train_patterns=(
-            "data/korean_raw/국립국어원 구어 말뭉치/*.json",
-            "data/korean_raw/국립국어원 구어 말뭉치(버전 1.2)/*.json",
-        ),
-        val_patterns=(),
-    ),
-    "nikl_written": DatasetSpec(
-        dataset_id="nikl_written",
-        source="국립국어원 문어 말뭉치",
-        train_patterns=(
-            "data/korean_raw/NIKL_WRITTEN(v1.2)/*.json",
-        ),
-        val_patterns=(),
     ),
     "045": DatasetSpec(
         dataset_id="045",
         source="045.지식검색 대화",
-        train_patterns=(
+        input_patterns=(
             "data/korean_raw/045.지식검색 대화/01-1.정식개방데이터/Training/02.라벨링데이터/**/*.json",
-        ),
-        val_patterns=(
             "data/korean_raw/045.지식검색 대화/01-1.정식개방데이터/Validation/02.라벨링데이터/**/*.json",
         ),
     ),
     "046": DatasetSpec(
         dataset_id="046",
         source="046.공감형 대화",
-        train_patterns=(
+        input_patterns=(
             "data/korean_raw/046.공감형 대화/01-1.정식개방데이터/Training/02.라벨링데이터/**/*.json",
-        ),
-        val_patterns=(
             "data/korean_raw/046.공감형 대화/01-1.정식개방데이터/Validation/02.라벨링데이터/**/*.json",
         ),
     ),
     "141": DatasetSpec(
         dataset_id="141",
         source="141.한국어 멀티세션 대화",
-        train_patterns=(
+        input_patterns=(
             "data/korean_raw/141.한국어 멀티세션 대화/01-1.정식개방데이터/Training/02.라벨링데이터/**/*.json",
-        ),
-        val_patterns=(
             "data/korean_raw/141.한국어 멀티세션 대화/01-1.정식개방데이터/Validation/02.라벨링데이터/**/*.json",
         ),
     ),
     "gsm8k": DatasetSpec(
         dataset_id="gsm8k",
         source="gsm8k",
-        train_patterns=("data/korean_raw/gsm8k/train-00000-of-00001.parquet",),
-        val_patterns=("data/korean_raw/gsm8k/test-00000-of-00001.parquet",),
+        input_patterns=(
+            "data/korean_raw/gsm8k/train-00000-of-00001.parquet",
+            "data/korean_raw/gsm8k/test-00000-of-00001.parquet",
+        ),
     ),
     "novel24": DatasetSpec(
         dataset_id="novel24",
         source="novel24",
-        train_patterns=("data/korean_raw/novel24/*.txt",),
-        val_patterns=(),
+        input_patterns=("data/korean_raw/novel24/*.txt",),
+    ),
+    "nikl_newspaper_2020": DatasetSpec(
+        dataset_id="nikl_newspaper_2020",
+        source="국립국어원 신문 말뭉치 2020",
+        input_patterns=(
+            "data/korean_raw/국립국어원 신문 말뭉치 2020/*.json",
+            "data/korean_raw/국립국어원 신문 말뭉치 2020(버전 1.1)/*.json",
+        ),
+    ),
+    "nikl_spoken": DatasetSpec(
+        dataset_id="nikl_spoken",
+        source="국립국어원 구어 말뭉치",
+        input_patterns=(
+            "data/korean_raw/국립국어원 구어 말뭉치/*.json",
+            "data/korean_raw/국립국어원 구어 말뭉치(버전 1.2)/*.json",
+        ),
+    ),
+    "nikl_written": DatasetSpec(
+        dataset_id="nikl_written",
+        source="국립국어원 문어 말뭉치",
+        input_patterns=("data/korean_raw/국립국어원 문어 말뭉치/*.json",),
+    ),
+    "HAERAE-HUB-KOREAN-WEBTEXT": DatasetSpec(
+        dataset_id="HAERAE-HUB-KOREAN-WEBTEXT",
+        source="HAERAE-HUB-KOREAN-WEBTEXT",
+        input_patterns=("data/korean_raw/HAERAE-HUB-KOREAN-WEBTEXT/*.parquet",),
+    ),
+    "HAERAE-HUB-HR-Instruct-Math-v0.1": DatasetSpec(
+        dataset_id="HAERAE-HUB-HR-Instruct-Math-v0.1",
+        source="HAERAE-HUB-HR-Instruct-Math-v0.1",
+        input_patterns=("data/korean_raw/HAERAE-HUB-HR-Instruct-Math-v0.1/*.parquet",),
+    ),
+    "namu": DatasetSpec(
+        dataset_id="namu",
+        source="namu",
+        input_patterns=("data/korean_raw/namu/*.json",),
+    ),
+    "nohurry-Opus-4.6-Reasoning-3000x-filtered": DatasetSpec(
+        dataset_id="nohurry-Opus-4.6-Reasoning-3000x-filtered",
+        source="nohurry-Opus-4.6-Reasoning-3000x-filtered",
+        input_patterns=("data/korean_raw/nohurry-Opus-4.6-Reasoning-3000x-filtered/*.jsonl",),
     ),
 }
 
-MULTI_SESSION_CONFIG = {
-    "009": {
-        "system": "당신은 기술과학 전문 비서입니다. 사용자의 질문에 친절하고 과학적으로 대답합니다.",
-    },
-    "010": {
-        "system": "당신은 사회과학 전문 비서입니다. 사용자의 질문에 친절하고 과학적으로 대답합니다.",
-    },
-    "011": {
-        "system": MULTI_SESSION_BASE_SYSTEM,
-    },
+MULTI_SESSION_SYSTEM_BY_DATASET = {
+    "009": "당신은 기술과학 전문 비서입니다. 사용자의 질문에 친절하고 과학적으로 대답합니다.",
+    "010": "당신은 사회과학 전문 비서입니다. 사용자의 질문에 친절하고 과학적으로 대답합니다.",
+    "011": MULTI_SESSION_BASE_SYSTEM,
 }
 
-TEXT_PREFIX_RE = re.compile(r"^\s*(?:[AB]|\d+)\s*[.:：]\s*")
-SELF_SPLIT_DATASET_IDS = {"nikl_newspaper_2020", "nikl_spoken", "nikl_written"}
-_SELF_SPLIT_PLAN_CACHE: dict[str, SelfSplitPlan] = {}
+_SPLIT_PLAN_CACHE: dict[str, DatasetSplitPlan] = {}
 
 
-def resolve_input_files(spec: DatasetSpec, target_split: str) -> list[InputFileItem]:
-    if spec.dataset_id == "novel24":
-        files = [
-            path
-            for path in stable_sorted_paths(Path().glob("data/korean_raw/novel24/*.txt"))
-            if path.name != ".DS_Store" and not path.name.startswith(".")
-        ]
-        train_files, val_files = split_novel24_files(files)
-        if target_split == "train":
-            return [InputFileItem(split="train", path=path) for path in files if path in train_files]
-        if target_split == "val":
-            return [InputFileItem(split="val", path=path) for path in files if path in val_files]
-        raise ValueError(f"unsupported split for novel24: {target_split}")
-    if spec.dataset_id in SELF_SPLIT_DATASET_IDS:
-        plan = get_self_split_plan(spec.dataset_id)
-        assignments = plan.assignments[target_split]
-        return [
-            InputFileItem(split=target_split, path=path, selected_record_ids=record_ids)
-            for path, record_ids in stable_sorted_assignment_items(assignments)
-        ]
+def _add_event(
+    recorder: QualityRecorder | None,
+    *,
+    dataset: str,
+    split: str | None,
+    file_path: Path,
+    record_id: str | None,
+    reason_code: str,
+    reason_detail: str,
+    sample_text: str | None,
+    severity: str,
+) -> None:
+    if recorder is None:
+        return
+    recorder.add(
+        dataset=dataset,
+        split=split,
+        file_path=str(file_path),
+        record_id=record_id,
+        reason_code=reason_code,
+        reason_detail=reason_detail,
+        sample_text=sample_text,
+        severity=severity,
+    )
 
-    patterns = spec.train_patterns if target_split == "train" else spec.val_patterns
+
+def list_input_files(spec: DatasetSpec) -> list[Path]:
     files: list[Path] = []
-    for pattern in patterns:
+    for pattern in spec.input_patterns:
         files.extend(Path().glob(pattern))
-    sorted_files = stable_sorted_paths(dict.fromkeys(files))
+    unique_files = stable_sorted_paths(dict.fromkeys(files))
     if spec.dataset_id == "023":
-        sorted_files = [path for path in sorted_files if path.name.startswith("LAB_")]
-    return [InputFileItem(split=target_split, path=path) for path in sorted_files]
+        unique_files = [path for path in unique_files if path.name.startswith("LAB_")]
+    if spec.dataset_id == "novel24":
+        unique_files = [
+            path
+            for path in unique_files
+            if path.suffix == ".txt" and not path.name.startswith(".") and path.name != ".DS_Store"
+        ]
+    return unique_files
 
 
 def stable_sorted_assignment_items(
@@ -253,79 +268,33 @@ def stable_sorted_assignment_items(
     return sorted(assignments.items(), key=lambda item: str(item[0]))
 
 
-def get_self_split_plan(dataset_id: str) -> SelfSplitPlan:
-    cached = _SELF_SPLIT_PLAN_CACHE.get(dataset_id)
-    if cached is not None:
-        return cached
-    spec = DATASET_SPECS[dataset_id]
-    all_files: list[Path] = []
-    for pattern in spec.train_patterns:
-        all_files.extend(Path().glob(pattern))
-    files = stable_sorted_paths(dict.fromkeys(all_files))
-    candidates: list[tuple[str, Path]] = []
-    raw_candidate_count = 0
-    for file_path in files:
-        try:
-            with file_path.open("r", encoding="utf-8") as f:
-                obj = json.load(f)
-        except Exception:  # noqa: BLE001
-            continue
-        raw_count, record_ids = collect_self_split_candidates(dataset_id, file_path, obj)
-        raw_candidate_count += raw_count
-        for record_id in record_ids:
-            candidates.append((record_id, file_path))
-    assignments = assign_self_split_records(source=spec.source, candidates=candidates)
-    stats = {
-        "raw_candidate_count": raw_candidate_count,
-        "valid_candidate_count": len(candidates),
-        "pre_split_excluded_count": raw_candidate_count - len(candidates),
-        "train_row_count": sum(len(record_ids) for record_ids in assignments["train"].values()),
-        "val_row_count": sum(len(record_ids) for record_ids in assignments["val"].values()),
-    }
-    plan = SelfSplitPlan(assignments=assignments, stats=stats)
-    _SELF_SPLIT_PLAN_CACHE[dataset_id] = plan
-    return plan
+def resolve_input_files(spec: DatasetSpec, target_split: str) -> list[InputFileItem]:
+    plan = get_dataset_split_plan(spec.dataset_id)
+    return [
+        InputFileItem(split=target_split, path=path, selected_record_ids=record_ids)
+        for path, record_ids in stable_sorted_assignment_items(plan.assignments[target_split])
+        if record_ids
+    ]
 
 
-def get_self_split_stats(dataset_id: str) -> dict[str, int] | None:
-    if dataset_id not in SELF_SPLIT_DATASET_IDS:
-        return None
-    return dict(get_self_split_plan(dataset_id).stats)
-
-
-def collect_self_split_candidates(
-    dataset_id: str,
-    file_path: Path,
-    obj: dict[str, Any],
-) -> tuple[int, list[str]]:
-    documents = obj.get("document")
-    if not isinstance(documents, list):
-        return 0, []
-    if dataset_id == "nikl_newspaper_2020":
-        return collect_nikl_newspaper_2020_candidate_keys(file_path, documents)
-    if dataset_id == "nikl_spoken":
-        return collect_nikl_spoken_candidate_keys(file_path, documents)
-    if dataset_id == "nikl_written":
-        return collect_nikl_written_candidate_keys(file_path, documents)
-    raise ValueError(f"unsupported self split dataset_id: {dataset_id}")
-
-
-def assign_self_split_records(
+def assign_split_records(
     *,
     source: str,
-    candidates: Sequence[tuple[str, Path]],
+    candidates: Sequence[tuple[str, str, Path]],
 ) -> dict[str, dict[Path, tuple[str, ...]]]:
     ranked: list[tuple[str, str, Path]] = []
-    for record_id, file_path in candidates:
-        digest = hashlib.sha256(f"{source}\t{record_id}".encode("utf-8")).hexdigest()
+    for record_id, split_key, file_path in candidates:
+        digest = hashlib.sha256(f"{source}\t{split_key}".encode("utf-8")).hexdigest()
         ranked.append((digest, record_id, file_path))
-    ranked.sort(key=lambda item: (item[0], item[1]))
+    ranked.sort(key=lambda item: (item[0], item[1], str(item[2])))
     total = len(ranked)
-    train_cut = total if total == 1 else max(1, int(total * 0.9))
-    if total >= 2 and train_cut >= total:
-        train_cut = total - 1
     train_assignments: dict[Path, list[str]] = defaultdict(list)
     val_assignments: dict[Path, list[str]] = defaultdict(list)
+    if total == 0:
+        return {"train": {}, "val": {}}
+    train_cut = total if total == 1 else ((total * 99) + 99) // 100
+    if total >= 2 and train_cut >= total:
+        train_cut = total - 1
     for index, (_, record_id, file_path) in enumerate(ranked):
         target = train_assignments if index < train_cut else val_assignments
         target[file_path].append(record_id)
@@ -335,87 +304,53 @@ def assign_self_split_records(
     }
 
 
-def collect_nikl_newspaper_2020_candidate_keys(
-    file_path: Path,
-    documents: Sequence[Any],
-) -> tuple[int, list[str]]:
-    raw_count = len(documents)
-    record_ids: list[str] = []
-    for index, document in enumerate(documents):
-        if not isinstance(document, dict):
-            continue
-        paragraphs = document.get("paragraph")
-        if not isinstance(paragraphs, list):
-            continue
-        valid_forms = [
-            form_text
-            for paragraph in paragraphs
-            if isinstance(paragraph, dict)
-            for form_text in [strip_text(paragraph.get("form"))]
-            if form_text is not None
-        ]
-        if len(valid_forms) < 2:
-            continue
-        record_ids.append(str(document.get("id") or f"{file_path.stem}:{index}"))
-    return raw_count, record_ids
+def get_dataset_split_plan(dataset_id: str) -> DatasetSplitPlan:
+    cached = _SPLIT_PLAN_CACHE.get(dataset_id)
+    if cached is not None:
+        return cached
+    spec = DATASET_SPECS[dataset_id]
+    files = list_input_files(spec)
+    candidates: list[tuple[str, str, Path]] = []
+    raw_candidate_count = 0
+    for file_path in files:
+        raw_count, file_candidates = collect_split_candidates(dataset_id, file_path)
+        raw_candidate_count += raw_count
+        for record_id, split_key in file_candidates:
+            candidates.append((record_id, split_key, file_path))
+    assignments = assign_split_records(source=spec.source, candidates=candidates)
+    stats = {
+        "input_files": len(files),
+        "raw_candidate_count": raw_candidate_count,
+        "valid_candidate_count": len(candidates),
+        "pre_split_excluded_count": raw_candidate_count - len(candidates),
+        "train_row_count": sum(len(record_ids) for record_ids in assignments["train"].values()),
+        "val_row_count": sum(len(record_ids) for record_ids in assignments["val"].values()),
+    }
+    plan = DatasetSplitPlan(assignments=assignments, stats=stats)
+    _SPLIT_PLAN_CACHE[dataset_id] = plan
+    return plan
 
 
-def collect_nikl_spoken_candidate_keys(
-    file_path: Path,
-    documents: Sequence[Any],
-) -> tuple[int, list[str]]:
-    raw_count = len(documents)
-    record_ids: list[str] = []
-    for index, document in enumerate(documents):
-        if not isinstance(document, dict):
-            continue
-        utterances = document.get("utterance")
-        if not isinstance(utterances, list):
-            continue
-        valid_forms = [
-            form_text
-            for utterance in utterances
-            if isinstance(utterance, dict)
-            for form_text in [strip_text(utterance.get("form"))]
-            if form_text is not None
-        ]
-        if not valid_forms:
-            continue
-        record_ids.append(str(document.get("id") or f"{file_path.stem}:{index}"))
-    return raw_count, record_ids
-
-
-def collect_nikl_written_candidate_keys(
-    file_path: Path,
-    documents: Sequence[Any],
-) -> tuple[int, list[str]]:
-    raw_count = len(documents)
-    record_ids: list[str] = []
-    for index, document in enumerate(documents):
-        if not isinstance(document, dict):
-            continue
-        metadata = document.get("metadata")
-        title = strip_text(metadata.get("title") if isinstance(metadata, dict) else None)
-        if title is None:
-            continue
-        paragraphs = document.get("paragraph")
-        if not isinstance(paragraphs, list):
-            continue
-        valid_forms = [
-            form_text
-            for paragraph in paragraphs
-            if isinstance(paragraph, dict)
-            for form_text in [strip_text(paragraph.get("form"))]
-            if form_text is not None
-        ]
-        if not valid_forms:
-            continue
-        record_ids.append(str(document.get("id") or f"{file_path.stem}:{index}"))
-    return raw_count, record_ids
+def get_split_plan_stats(dataset_id: str) -> dict[str, int]:
+    return dict(get_dataset_split_plan(dataset_id).stats)
 
 
 def clean_text_prefix(text: str) -> str:
     return TEXT_PREFIX_RE.sub("", text).strip()
+
+
+def clean_annotations_text_for_021(text: str) -> str:
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    cleaned_lines: list[str] = []
+    for line in lines:
+        stripped = strip_text(line)
+        if stripped is None:
+            continue
+        stripped = clean_text_prefix(stripped)
+        stripped = compact_spaces(stripped)
+        if stripped:
+            cleaned_lines.append(stripped)
+    return "\n".join(cleaned_lines)
 
 
 def merge_consecutive_turns(turns: Sequence[dict[str, str]]) -> list[dict[str, str]]:
@@ -424,7 +359,7 @@ def merge_consecutive_turns(turns: Sequence[dict[str, str]]) -> list[dict[str, s
         if merged and merged[-1]["role"] == turn["role"]:
             merged[-1]["content"] = merged[-1]["content"] + " " + turn["content"]
         else:
-            merged.append(dict(turn))
+            merged.append({"role": turn["role"], "content": turn["content"]})
     return merged
 
 
@@ -432,16 +367,17 @@ def finalize_dialog_turns(
     *,
     turns: Sequence[dict[str, str]],
     dataset: str,
-    split: str,
+    split: str | None,
     file_path: Path,
     record_id: str | None,
-    recorder: QualityRecorder,
+    recorder: QualityRecorder | None,
 ) -> list[dict[str, str]] | None:
     if not turns:
-        recorder.add(
+        _add_event(
+            recorder,
             dataset=dataset,
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=record_id,
             reason_code="empty_turns",
             reason_detail="no valid turns after normalization",
@@ -450,10 +386,11 @@ def finalize_dialog_turns(
         )
         return None
     if turns[0]["role"] != "user":
-        recorder.add(
+        _add_event(
+            recorder,
             dataset=dataset,
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=record_id,
             reason_code="bad_start_role",
             reason_detail="dialog must start with user",
@@ -463,10 +400,11 @@ def finalize_dialog_turns(
         return None
     for left, right in zip(turns, turns[1:]):
         if left["role"] == right["role"]:
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset=dataset,
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="role_alternation_broken",
                 reason_detail="adjacent turns share the same role",
@@ -474,13 +412,14 @@ def finalize_dialog_turns(
                 severity="skip",
             )
             return None
-    output = [dict(turn) for turn in turns]
+    output = [{"role": turn["role"], "content": turn["content"]} for turn in turns]
     if output[-1]["role"] == "user":
         removed = output.pop()
-        recorder.add(
+        _add_event(
+            recorder,
             dataset=dataset,
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=record_id,
             reason_code="trim_trailing_user",
             reason_detail="removed trailing user turn",
@@ -488,10 +427,11 @@ def finalize_dialog_turns(
             severity="fixup",
         )
     if not output or output[-1]["role"] != "assistant":
-        recorder.add(
+        _add_event(
+            recorder,
             dataset=dataset,
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=record_id,
             reason_code="no_final_assistant",
             reason_detail="dialog does not end in assistant after fixup",
@@ -500,10 +440,11 @@ def finalize_dialog_turns(
         )
         return None
     if not any(turn["role"] == "assistant" for turn in output):
-        recorder.add(
+        _add_event(
+            recorder,
             dataset=dataset,
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=record_id,
             reason_code="missing_assistant",
             reason_detail="assistant turn not found",
@@ -514,22 +455,87 @@ def finalize_dialog_turns(
     return output
 
 
-def make_row(
+def _make_record(
     *,
+    record_id: str,
+    split_key: str,
     source: str,
-    split: str,
+    data_usage: str,
     content: str | None,
     messages: list[dict[str, str]] | None,
-) -> dict[str, Any]:
-    token_count = compute_token_count(content=content, messages=messages)
-    return {
-        "source": source,
-        "data_usage": infer_data_usage(messages),
-        "split": split,
-        "content": content,
-        "messages": messages,
-        "token_count": token_count,
-    }
+) -> BuiltRecord:
+    if content is None and messages is None:
+        raise ValueError("content/messages cannot both be null")
+    return BuiltRecord(
+        record_id=record_id,
+        split_key=split_key,
+        source=source,
+        data_usage=data_usage,
+        content=content,
+        messages=messages,
+    )
+
+
+def _read_json(
+    file_path: Path,
+    *,
+    dataset_id: str,
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> Any | None:
+    try:
+        with file_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:  # noqa: BLE001
+        _add_event(
+            recorder,
+            dataset=dataset_id,
+            split=split,
+            file_path=file_path,
+            record_id=None,
+            reason_code="json_parse_error",
+            reason_detail=f"{type(exc).__name__}: {exc}",
+            sample_text=None,
+            severity="error",
+        )
+        return None
+
+
+def _extract_sentence_values(value: Any) -> list[str]:
+    items = value if isinstance(value, list) else [value]
+    sentences: list[str] = []
+    for item in items:
+        sentence = strip_text(item.get("sentence") if isinstance(item, dict) else None)
+        if sentence is not None:
+            sentences.append(sentence)
+    return sentences
+
+
+def _collect_turn_text(
+    line: dict[str, Any],
+    *,
+    strip_prefix: bool,
+) -> str | None:
+    text = strip_text(line.get("norm_text"))
+    if text is not None:
+        return text
+    raw_text = strip_text(line.get("text"))
+    if raw_text is None:
+        return None
+    if not strip_prefix:
+        return raw_text
+    cleaned = clean_text_prefix(raw_text)
+    return cleaned or None
+
+
+def collect_split_candidates(dataset_id: str, file_path: Path) -> tuple[int, list[tuple[str, str]]]:
+    records, raw_count = _build_records_for_file(
+        dataset_id=dataset_id,
+        file_path=file_path,
+        split=None,
+        recorder=None,
+    )
+    return raw_count, [(record.record_id, record.split_key) for record in records]
 
 
 def process_file(
@@ -541,139 +547,124 @@ def process_file(
     recorder = QualityRecorder()
     stats = Counter(input_files=1, output_rows=0)
     try:
-        if dataset_id == "gsm8k":
-            rows = _process_gsm8k(file_path=file_path, split=split, recorder=recorder)
-        elif dataset_id == "novel24":
-            rows = _process_novel24(file_path=file_path, recorder=recorder)
-        else:
-            rows = _process_json_dataset(
-                dataset_id=dataset_id,
-                split=split,
-                file_path=file_path,
-                recorder=recorder,
-                selected_record_ids=selected_record_ids,
-            )
+        records, raw_count = _build_records_for_file(
+            dataset_id=dataset_id,
+            file_path=file_path,
+            split=split,
+            recorder=recorder,
+        )
     except Exception as exc:  # noqa: BLE001
-        recorder.add(
+        _add_event(
+            recorder,
             dataset=dataset_id,
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=None,
             reason_code="file_processing_error",
             reason_detail=f"{type(exc).__name__}: {exc}",
             sample_text=None,
             severity="error",
         )
-        rows = []
+        return [], recorder.events, dict(stats)
+    allowed_record_ids = set(selected_record_ids) if selected_record_ids is not None else None
+    selected_records = [
+        record for record in records if allowed_record_ids is None or record.record_id in allowed_record_ids
+    ]
+    rows = [record.to_row(split) for record in selected_records]
+    stats["raw_candidate_count"] = raw_count
+    stats["valid_candidate_count"] = len(records)
     stats["output_rows"] = len(rows)
     return rows, recorder.events, dict(stats)
 
 
-def _read_json(file_path: Path, dataset_id: str, split: str, recorder: QualityRecorder) -> Any | None:
-    try:
-        with file_path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as exc:  # noqa: BLE001
-        recorder.add(
-            dataset=dataset_id,
-            split=split,
-            file_path=str(file_path),
-            record_id=None,
-            reason_code="json_parse_error",
-            reason_detail=f"{type(exc).__name__}: {exc}",
-            sample_text=None,
-            severity="error",
-        )
-        return None
-
-
-def _process_json_dataset(
+def _build_records_for_file(
     *,
     dataset_id: str,
-    split: str,
     file_path: Path,
-    recorder: QualityRecorder,
-    selected_record_ids: tuple[str, ...] | None = None,
-) -> list[dict[str, Any]]:
-    obj = _read_json(file_path, dataset_id, split, recorder)
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
+    if dataset_id == "gsm8k":
+        return _build_gsm8k_records(file_path=file_path, split=split, recorder=recorder)
+    if dataset_id == "novel24":
+        return _build_novel24_records(file_path=file_path, split=split, recorder=recorder)
+    if dataset_id == "HAERAE-HUB-HR-Instruct-Math-v0.1":
+        return _build_hr_math_records(file_path=file_path, split=split, recorder=recorder)
+    if dataset_id == "HAERAE-HUB-KOREAN-WEBTEXT":
+        return _build_webtext_records(file_path=file_path, split=split, recorder=recorder)
+    if dataset_id == "namu":
+        return _build_namu_records(file_path=file_path, split=split, recorder=recorder)
+    if dataset_id == "nohurry-Opus-4.6-Reasoning-3000x-filtered":
+        return _build_nohurry_records(file_path=file_path, split=split, recorder=recorder)
+    obj = _read_json(file_path, dataset_id=dataset_id, split=split, recorder=recorder)
     if obj is None:
-        return []
+        return [], 0
     if dataset_id in {"009", "010", "011"}:
-        return _process_multi_session(dataset_id, split, file_path, obj, recorder)
+        return _build_multi_session_records(
+            dataset_id=dataset_id,
+            file_path=file_path,
+            obj=obj,
+            split=split,
+            recorder=recorder,
+        )
     if dataset_id == "141":
-        return _process_141(split, file_path, obj, recorder)
+        return _build_141_records(file_path=file_path, obj=obj, split=split, recorder=recorder)
     if dataset_id == "019":
-        return _process_019(split, file_path, obj, recorder)
+        return _build_019_records(file_path=file_path, obj=obj, split=split, recorder=recorder)
     if dataset_id == "020":
-        return _process_020(split, file_path, obj, recorder)
+        return _build_020_records(file_path=file_path, obj=obj, split=split, recorder=recorder)
     if dataset_id == "021":
-        return _process_021(split, file_path, obj, recorder)
+        return _build_021_records(file_path=file_path, obj=obj, split=split, recorder=recorder)
     if dataset_id == "023":
-        return _process_023(split, file_path, obj, recorder)
+        return _build_023_records(file_path=file_path, obj=obj, split=split, recorder=recorder)
     if dataset_id == "030":
-        return _process_030(split, file_path, obj, recorder)
-    if dataset_id == "nikl_newspaper_2020":
-        return _process_nikl_newspaper_2020(
-            split,
-            file_path,
-            obj,
-            recorder,
-            selected_record_ids=selected_record_ids,
-        )
-    if dataset_id == "nikl_spoken":
-        return _process_nikl_spoken(
-            split,
-            file_path,
-            obj,
-            recorder,
-            selected_record_ids=selected_record_ids,
-        )
-    if dataset_id == "nikl_written":
-        return _process_nikl_written(
-            split,
-            file_path,
-            obj,
-            recorder,
-            selected_record_ids=selected_record_ids,
-        )
+        return _build_030_records(file_path=file_path, obj=obj, split=split, recorder=recorder)
     if dataset_id == "045":
-        return _process_045(split, file_path, obj, recorder)
+        return _build_045_records(file_path=file_path, obj=obj, split=split, recorder=recorder)
     if dataset_id == "046":
-        return _process_046(split, file_path, obj, recorder)
+        return _build_046_records(file_path=file_path, obj=obj, split=split, recorder=recorder)
+    if dataset_id == "nikl_newspaper_2020":
+        return _build_nikl_newspaper_records(file_path=file_path, obj=obj, split=split, recorder=recorder)
+    if dataset_id == "nikl_spoken":
+        return _build_nikl_spoken_records(file_path=file_path, obj=obj, split=split, recorder=recorder)
+    if dataset_id == "nikl_written":
+        return _build_nikl_written_records(file_path=file_path, obj=obj, split=split, recorder=recorder)
     raise ValueError(f"unsupported dataset_id: {dataset_id}")
 
 
-def _process_multi_session(
+def _build_multi_session_records(
+    *,
     dataset_id: str,
-    split: str,
     file_path: Path,
     obj: dict[str, Any],
-    recorder: QualityRecorder,
-) -> list[dict[str, Any]]:
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
     sessions = obj.get("sessionInfo")
     if not isinstance(sessions, list):
-        recorder.add(
+        _add_event(
+            recorder,
             dataset=dataset_id,
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=None,
             reason_code="missing_session_info",
             reason_detail="sessionInfo must be a list",
             sample_text=None,
             severity="skip",
         )
-        return []
-    system = MULTI_SESSION_CONFIG[dataset_id]["system"]
-    source = DATASET_SPECS[dataset_id].source
-    rows: list[dict[str, Any]] = []
-    for session in sessions:
-        session_id = str(session.get("sessionID")) if session.get("sessionID") is not None else None
+        return [], 0
+    records: list[BuiltRecord] = []
+    system = MULTI_SESSION_SYSTEM_BY_DATASET[dataset_id]
+    for session_index, session in enumerate(sessions):
+        session_id = str(session.get("sessionID") or f"{file_path.stem}:{session_index}")
         dialog = session.get("dialog")
         if not isinstance(dialog, list):
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset=dataset_id,
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=session_id,
                 reason_code="missing_dialog",
                 reason_detail="dialog must be a list",
@@ -684,13 +675,14 @@ def _process_multi_session(
         turns: list[dict[str, str]] = []
         bad_session = False
         for item in dialog:
-            utterance = strip_text(item.get("utterance"))
-            speaker = item.get("speaker")
+            utterance = strip_text(item.get("utterance") if isinstance(item, dict) else None)
+            speaker = item.get("speaker") if isinstance(item, dict) else None
             if utterance is None:
-                recorder.add(
+                _add_event(
+                    recorder,
                     dataset=dataset_id,
                     split=split,
-                    file_path=str(file_path),
+                    file_path=file_path,
                     record_id=session_id,
                     reason_code="invalid_utterance",
                     reason_detail="utterance must be non-empty string",
@@ -704,10 +696,11 @@ def _process_multi_session(
             elif speaker == "speaker2":
                 role = "assistant"
             else:
-                recorder.add(
+                _add_event(
+                    recorder,
                     dataset=dataset_id,
                     split=split,
-                    file_path=str(file_path),
+                    file_path=file_path,
                     record_id=session_id,
                     reason_code="invalid_speaker",
                     reason_detail=f"unsupported speaker: {speaker}",
@@ -730,38 +723,42 @@ def _process_multi_session(
         if final_turns is None:
             continue
         messages = [{"role": "system", "content": system}, *final_turns]
-        rows.append(
-            make_row(
-                source=source,
-                split=split,
+        records.append(
+            _make_record(
+                record_id=session_id,
+                split_key=session_id,
+                source=DATASET_SPECS[dataset_id].source,
+                data_usage="SFT",
                 content=build_content_from_messages(messages),
                 messages=messages,
             )
         )
-    return rows
+    return records, len(sessions)
 
 
-def _process_141(
-    split: str,
+def _build_141_records(
+    *,
     file_path: Path,
     obj: dict[str, Any],
-    recorder: QualityRecorder,
-) -> list[dict[str, Any]]:
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
     sessions = obj.get("sessionInfo")
     if not isinstance(sessions, list):
-        recorder.add(
+        _add_event(
+            recorder,
             dataset="141",
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=None,
             reason_code="missing_session_info",
             reason_detail="sessionInfo must be a list",
             sample_text=None,
             severity="skip",
         )
-        return []
+        return [], 0
+    feature_lines: list[str] = []
     features = obj.get("personaInfo", {}).get("clInfo", {}).get("personaFeatures")
-    feature_lines = []
     if isinstance(features, list):
         for feature in features:
             text = strip_text(feature)
@@ -771,25 +768,27 @@ def _process_141(
     if feature_lines:
         system = system + "\n[clInfo persona]\n" + "\n".join(feature_lines)
     else:
-        recorder.add(
+        _add_event(
+            recorder,
             dataset="141",
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=None,
             reason_code="missing_persona_features",
             reason_detail="personaInfo.clInfo.personaFeatures missing or empty",
             sample_text=None,
             severity="fixup",
         )
-    rows: list[dict[str, Any]] = []
-    for session in sessions:
-        session_id = str(session.get("sessionID")) if session.get("sessionID") is not None else None
+    records: list[BuiltRecord] = []
+    for session_index, session in enumerate(sessions):
+        session_id = str(session.get("sessionID") or f"{file_path.stem}:{session_index}")
         dialog = session.get("dialog")
         if not isinstance(dialog, list):
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="141",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=session_id,
                 reason_code="missing_dialog",
                 reason_detail="dialog must be a list",
@@ -798,42 +797,44 @@ def _process_141(
             )
             continue
         turns: list[dict[str, str]] = []
-        bad = False
+        bad_session = False
         for item in dialog:
-            utterance = strip_text(item.get("utterance"))
-            speaker = item.get("speaker")
+            utterance = strip_text(item.get("utterance") if isinstance(item, dict) else None)
+            speaker = item.get("speaker") if isinstance(item, dict) else None
             if utterance is None:
-                recorder.add(
+                _add_event(
+                    recorder,
                     dataset="141",
                     split=split,
-                    file_path=str(file_path),
+                    file_path=file_path,
                     record_id=session_id,
                     reason_code="invalid_utterance",
                     reason_detail="utterance must be non-empty string",
                     sample_text=None,
                     severity="skip",
                 )
-                bad = True
+                bad_session = True
                 break
             if speaker == "speaker1":
                 role = "user"
             elif speaker == "speaker2":
                 role = "assistant"
             else:
-                recorder.add(
+                _add_event(
+                    recorder,
                     dataset="141",
                     split=split,
-                    file_path=str(file_path),
+                    file_path=file_path,
                     record_id=session_id,
                     reason_code="invalid_speaker",
                     reason_detail=f"unsupported speaker: {speaker}",
                     sample_text=truncate_sample(utterance),
                     severity="skip",
                 )
-                bad = True
+                bad_session = True
                 break
             turns.append({"role": role, "content": utterance})
-        if bad:
+        if bad_session:
             continue
         final_turns = finalize_dialog_turns(
             turns=turns,
@@ -846,24 +847,27 @@ def _process_141(
         if final_turns is None:
             continue
         messages = [{"role": "system", "content": system}, *final_turns]
-        rows.append(
-            make_row(
+        records.append(
+            _make_record(
+                record_id=session_id,
+                split_key=session_id,
                 source=DATASET_SPECS["141"].source,
-                split=split,
+                data_usage="SFT",
                 content=build_content_from_messages(messages),
                 messages=messages,
             )
         )
-    return rows
+    return records, len(sessions)
 
 
-def _process_019(
-    split: str,
+def _build_019_records(
+    *,
     file_path: Path,
     obj: dict[str, Any],
-    recorder: QualityRecorder,
-) -> list[dict[str, Any]]:
-    case_id = str(obj.get("info", {}).get("caseNo") or file_path.name)
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
+    case_id = str(obj.get("info", {}).get("caseNo") or file_path.stem)
     field_specs = [
         ("mentionedItems.rqestObjet", "mentionedItems", "rqestObjet"),
         ("disposal.disposalcontent", "disposal", "disposalcontent"),
@@ -874,7 +878,6 @@ def _process_019(
         ("clauseArticle", "clauseArticle", None),
         ("comProvision", "comProvision", None),
     ]
-    candidate_fields = ", ".join(field_label for field_label, _, _ in field_specs)
     parts: list[str] = []
     pending_events: list[QualityEvent] = []
     for field_label, parent_key, child_key in field_specs:
@@ -914,76 +917,88 @@ def _process_019(
                         severity="skip",
                     )
                 )
-    partial_severity = "fixup" if parts else "skip"
-    recorder.extend(
-        [
-            QualityEvent(
-                dataset=event.dataset,
-                split=event.split,
-                file_path=event.file_path,
-                record_id=event.record_id,
-                reason_code=event.reason_code,
-                reason_detail=event.reason_detail,
-                sample_text=event.sample_text,
-                severity=partial_severity,
-            )
-            for event in pending_events
-        ]
-    )
+    event_severity = "fixup" if parts else "skip"
+    if recorder is not None:
+        recorder.extend(
+            [
+                QualityEvent(
+                    dataset=event.dataset,
+                    split=event.split,
+                    file_path=event.file_path,
+                    record_id=event.record_id,
+                    reason_code=event.reason_code,
+                    reason_detail=event.reason_detail,
+                    sample_text=event.sample_text,
+                    severity=event_severity,
+                )
+                for event in pending_events
+            ]
+        )
     if not parts:
-        recorder.add(
+        _add_event(
+            recorder,
             dataset="019",
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=case_id,
             reason_code="empty_content",
             reason_detail=(
                 "row skipped because no usable text remained across 019 candidate fields "
-                f"({candidate_fields}) after normalization"
+                "(mentionedItems.rqestObjet, disposal.disposalcontent, assrs.dedatAssrs, "
+                "facts.bsisFacts, dcss.courtDcss, close.cnclsns, clauseArticle, comProvision) "
+                "after normalization"
             ),
             sample_text=None,
             severity="skip",
         )
-        return []
-    content = "\n".join(parts)
-    return [
-        make_row(
-            source=DATASET_SPECS["019"].source,
-            split=split,
-            content=content,
-            messages=None,
-        )
-    ]
+        return [], 1
+    return (
+        [
+            _make_record(
+                record_id=case_id,
+                split_key=case_id,
+                source=DATASET_SPECS["019"].source,
+                data_usage="PT",
+                content="\n".join(parts),
+                messages=None,
+            )
+        ],
+        1,
+    )
 
 
-def _process_020(
-    split: str,
+def _build_020_records(
+    *,
     file_path: Path,
     obj: dict[str, Any],
-    recorder: QualityRecorder,
-) -> list[dict[str, Any]]:
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
     info = obj.get("info")
     if not isinstance(info, list):
-        recorder.add(
+        _add_event(
+            recorder,
             dataset="020",
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=None,
             reason_code="missing_info",
             reason_detail="info must be a list",
             sample_text=None,
             severity="skip",
         )
-        return []
-    rows: list[dict[str, Any]] = []
-    for record in info:
-        record_id = str(record.get("id") or record.get("filename") or file_path.name)
+        return [], 0
+    records: list[BuiltRecord] = []
+    system = "당신은 일상 대화 상대입니다. 사용자의 말에 자연스럽고 친근하게 반응하세요."
+    for record_index, record in enumerate(info):
+        record_id = str(record.get("id") or record.get("filename") or f"{file_path.stem}:{record_index}")
         annotations = record.get("annotations")
         if not isinstance(annotations, dict):
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="020",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="missing_annotations",
                 reason_detail="annotations must be an object",
@@ -991,73 +1006,26 @@ def _process_020(
                 severity="skip",
             )
             continue
-        lines = annotations.get("lines")
-        speaker_type = annotations.get("speaker_type")
-        if speaker_type != "1:1":
-            event = QualityEvent(
+        if annotations.get("speaker_type") != "1:1":
+            _add_event(
+                recorder,
                 dataset="020",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="skip_speaker_type",
-                reason_detail=f"speaker_type={speaker_type}",
+                reason_detail=f"speaker_type={annotations.get('speaker_type')}",
                 sample_text=None,
                 severity="skip",
             )
-            recorder.extend([event])
-            if not isinstance(lines, list):
-                continue
-            pt_parts: list[str] = []
-            for line in lines:
-                speaker_id = strip_text(line.get("speaker", {}).get("id"))
-                if speaker_id is None:
-                    recorder.add(
-                        dataset="020",
-                        split=split,
-                        file_path=str(file_path),
-                        record_id=record_id,
-                        reason_code="skip_turn",
-                        reason_detail="speaker.id missing",
-                        sample_text=None,
-                        severity="skip",
-                    )
-                    continue
-                text = strip_text(line.get("norm_text"))
-                if text is None:
-                    raw = strip_text(line.get("text"))
-                    if raw is not None:
-                        text = clean_text_prefix(raw)
-                        text = text if text else None
-                if text is None:
-                    recorder.add(
-                        dataset="020",
-                        split=split,
-                        file_path=str(file_path),
-                        record_id=record_id,
-                        reason_code="skip_turn",
-                        reason_detail="turn text missing",
-                        sample_text=None,
-                        severity="skip",
-                    )
-                    continue
-                pt_parts.append(text)
-            if not pt_parts:
-                continue
-            event.severity = "fixup"
-            rows.append(
-                make_row(
-                    source=DATASET_SPECS["020"].source,
-                    split=split,
-                    content=" ".join(pt_parts),
-                    messages=None,
-                )
-            )
             continue
+        lines = annotations.get("lines")
         if not isinstance(lines, list):
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="020",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="missing_lines",
                 reason_detail="annotations.lines must be a list",
@@ -1067,42 +1035,48 @@ def _process_020(
             continue
         speaker_map: dict[str, str] = {}
         turns: list[dict[str, str]] = []
-        pt_parts: list[str] = []
-        third_speaker_event: QualityEvent | None = None
+        third_speaker = False
         for line in lines:
-            speaker_id = strip_text(line.get("speaker", {}).get("id"))
-            if speaker_id is None:
-                recorder.add(
+            if not isinstance(line, dict):
+                _add_event(
+                    recorder,
                     dataset="020",
                     split=split,
-                    file_path=str(file_path),
+                    file_path=file_path,
+                    record_id=record_id,
+                    reason_code="skip_turn",
+                    reason_detail="line item must be an object",
+                    sample_text=None,
+                    severity="fixup",
+                )
+                continue
+            speaker_id = strip_text(line.get("speaker", {}).get("id"))
+            if speaker_id is None:
+                _add_event(
+                    recorder,
+                    dataset="020",
+                    split=split,
+                    file_path=file_path,
                     record_id=record_id,
                     reason_code="skip_turn",
                     reason_detail="speaker.id missing",
                     sample_text=None,
-                    severity="skip",
+                    severity="fixup",
                 )
                 continue
-            text = strip_text(line.get("norm_text"))
+            text = _collect_turn_text(line, strip_prefix=True)
             if text is None:
-                raw = strip_text(line.get("text"))
-                if raw is not None:
-                    text = clean_text_prefix(raw)
-                    text = text if text else None
-            if text is None:
-                recorder.add(
+                _add_event(
+                    recorder,
                     dataset="020",
                     split=split,
-                    file_path=str(file_path),
+                    file_path=file_path,
                     record_id=record_id,
                     reason_code="skip_turn",
                     reason_detail="turn text missing",
                     sample_text=None,
-                    severity="skip",
+                    severity="fixup",
                 )
-                continue
-            pt_parts.append(text)
-            if third_speaker_event is not None:
                 continue
             if speaker_id not in speaker_map:
                 if not speaker_map:
@@ -1110,31 +1084,21 @@ def _process_020(
                 elif len(speaker_map) == 1:
                     speaker_map[speaker_id] = "assistant"
                 else:
-                    third_speaker_event = QualityEvent(
+                    _add_event(
+                        recorder,
                         dataset="020",
                         split=split,
-                        file_path=str(file_path),
+                        file_path=file_path,
                         record_id=record_id,
                         reason_code="third_speaker",
                         reason_detail=f"third speaker encountered: {speaker_id}",
                         sample_text=truncate_sample(text),
                         severity="skip",
                     )
-                    recorder.extend([third_speaker_event])
-                    continue
+                    third_speaker = True
+                    break
             turns.append({"role": speaker_map[speaker_id], "content": text})
-        if third_speaker_event is not None:
-            if not pt_parts:
-                continue
-            third_speaker_event.severity = "fixup"
-            rows.append(
-                make_row(
-                    source=DATASET_SPECS["020"].source,
-                    split=split,
-                    content=" ".join(pt_parts),
-                    messages=None,
-                )
-            )
+        if third_speaker:
             continue
         merged = merge_consecutive_turns(turns)
         final_turns = finalize_dialog_turns(
@@ -1147,62 +1111,52 @@ def _process_020(
         )
         if final_turns is None:
             continue
-        system = "당신은 일상 대화 상대입니다. 사용자의 말에 자연스럽고 친근하게 반응하세요."
         messages = [{"role": "system", "content": system}, *final_turns]
-        rows.append(
-            make_row(
+        records.append(
+            _make_record(
+                record_id=record_id,
+                split_key=record_id,
                 source=DATASET_SPECS["020"].source,
-                split=split,
+                data_usage="SFT",
                 content=build_content_from_messages(messages),
                 messages=messages,
             )
         )
-    return rows
+    return records, len(info)
 
 
-def clean_annotations_text_for_021(text: str) -> str:
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    cleaned_lines: list[str] = []
-    for line in lines:
-        stripped = strip_text(line)
-        if stripped is None:
-            continue
-        stripped = clean_text_prefix(stripped)
-        stripped = compact_spaces(stripped)
-        if stripped:
-            cleaned_lines.append(stripped)
-    return "\n".join(cleaned_lines)
-
-
-def _process_021(
-    split: str,
+def _build_021_records(
+    *,
     file_path: Path,
     obj: dict[str, Any],
-    recorder: QualityRecorder,
-) -> list[dict[str, Any]]:
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
     info = obj.get("info")
     if not isinstance(info, list):
-        recorder.add(
+        _add_event(
+            recorder,
             dataset="021",
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=None,
             reason_code="missing_info",
             reason_detail="info must be a list",
             sample_text=None,
             severity="skip",
         )
-        return []
-    rows: list[dict[str, Any]] = []
+        return [], 0
     system = "당신은 콜센터 상담원입니다. 사용자의 문의에 정확하고 친절하게 답변하세요."
-    for record in info:
-        record_id = str(record.get("id") or record.get("filename") or file_path.name)
+    records: list[BuiltRecord] = []
+    for record_index, record in enumerate(info):
+        record_id = str(record.get("id") or record.get("filename") or f"{file_path.stem}:{record_index}")
         annotations = record.get("annotations")
         if not isinstance(annotations, dict):
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="021",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="missing_annotations",
                 reason_detail="annotations must be an object",
@@ -1210,12 +1164,13 @@ def _process_021(
                 severity="skip",
             )
             continue
-        raw_content = strip_text(annotations.get("text"))
-        if raw_content is None:
-            recorder.add(
+        content = strip_text(annotations.get("text"))
+        if content is None:
+            _add_event(
+                recorder,
                 dataset="021",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="missing_annotations_text",
                 reason_detail="annotations.text must be non-empty string",
@@ -1223,25 +1178,13 @@ def _process_021(
                 severity="skip",
             )
             continue
-        content = clean_annotations_text_for_021(raw_content)
-        if not content:
-            recorder.add(
-                dataset="021",
-                split=split,
-                file_path=str(file_path),
-                record_id=record_id,
-                reason_code="empty_cleaned_content",
-                reason_detail="annotations.text became empty after cleaning",
-                sample_text=None,
-                severity="skip",
-            )
-            continue
         lines = annotations.get("lines")
         if not isinstance(lines, list):
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="021",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="missing_lines",
                 reason_detail="annotations.lines must be a list",
@@ -1251,23 +1194,32 @@ def _process_021(
             continue
         turns: list[dict[str, str]] = []
         for line in lines:
-            speaker_id = line.get("speaker", {}).get("id")
-            text = strip_text(line.get("norm_text"))
-            if text is None:
-                raw_text = strip_text(line.get("text"))
-                if raw_text is not None:
-                    text = clean_text_prefix(raw_text)
-                    text = text if text else None
-            if text is None:
-                recorder.add(
+            if not isinstance(line, dict):
+                _add_event(
+                    recorder,
                     dataset="021",
                     split=split,
-                    file_path=str(file_path),
+                    file_path=file_path,
+                    record_id=record_id,
+                    reason_code="skip_turn",
+                    reason_detail="line item must be an object",
+                    sample_text=None,
+                    severity="fixup",
+                )
+                continue
+            speaker_id = line.get("speaker", {}).get("id")
+            text = _collect_turn_text(line, strip_prefix=True)
+            if text is None:
+                _add_event(
+                    recorder,
+                    dataset="021",
+                    split=split,
+                    file_path=file_path,
                     record_id=record_id,
                     reason_code="skip_turn",
                     reason_detail="turn text missing",
                     sample_text=None,
-                    severity="skip",
+                    severity="fixup",
                 )
                 continue
             if speaker_id == "B":
@@ -1275,15 +1227,16 @@ def _process_021(
             elif speaker_id == "A":
                 role = "assistant"
             else:
-                recorder.add(
+                _add_event(
+                    recorder,
                     dataset="021",
                     split=split,
-                    file_path=str(file_path),
+                    file_path=file_path,
                     record_id=record_id,
                     reason_code="skip_turn",
                     reason_detail=f"unsupported speaker.id={speaker_id}",
                     sample_text=truncate_sample(text),
-                    severity="skip",
+                    severity="fixup",
                 )
                 continue
             turns.append({"role": role, "content": text})
@@ -1292,10 +1245,11 @@ def _process_021(
             None,
         )
         if first_assistant_index is None:
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="021",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="missing_assistant",
                 reason_detail="assistant turn not found before FT cleanup",
@@ -1303,9 +1257,19 @@ def _process_021(
                 severity="skip",
             )
             continue
+        _add_event(
+            recorder,
+            dataset="021",
+            split=split,
+            file_path=file_path,
+            record_id=record_id,
+            reason_code="drop_initial_assistant",
+            reason_detail="removed the first assistant greeting turn",
+            sample_text=truncate_sample(turns[first_assistant_index]["content"]),
+            severity="fixup",
+        )
         ft_turns = turns[:first_assistant_index] + turns[first_assistant_index + 1 :]
         merged = merge_consecutive_turns(ft_turns)
-        event_count_before_finalize = len(recorder.events)
         final_turns = finalize_dialog_turns(
             turns=merged,
             dataset="021",
@@ -1315,51 +1279,45 @@ def _process_021(
             recorder=recorder,
         )
         if final_turns is None:
-            new_events = recorder.events[event_count_before_finalize:]
-            if new_events and new_events[-1].reason_code == "bad_start_role":
-                rows.append(
-                    make_row(
-                        source=DATASET_SPECS["021"].source,
-                        split=split,
-                        content=content,
-                        messages=None,
-                    )
-                )
-                continue
             continue
         messages = [{"role": "system", "content": system}, *final_turns]
-        rows.append(
-            make_row(
+        records.append(
+            _make_record(
+                record_id=record_id,
+                split_key=record_id,
                 source=DATASET_SPECS["021"].source,
-                split=split,
+                data_usage="SFT",
                 content=content,
                 messages=messages,
             )
         )
-    return rows
+    return records, len(info)
 
 
-def _process_023(
-    split: str,
+def _build_023_records(
+    *,
     file_path: Path,
     obj: dict[str, Any],
-    recorder: QualityRecorder,
-) -> list[dict[str, Any]]:
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
+    record_id = str(obj.get("id") or obj.get("question_number") or file_path.stem)
     context = strip_text(obj.get("context"))
     question = strip_text(obj.get("question", {}).get("comment"))
     answer = strip_text(obj.get("answer", {}).get("comment"))
     if context is None or question is None or answer is None:
-        recorder.add(
+        _add_event(
+            recorder,
             dataset="023",
             split=split,
-            file_path=str(file_path),
-            record_id=str(obj.get("id") or obj.get("question_number") or file_path.name),
+            file_path=file_path,
+            record_id=record_id,
             reason_code="missing_fields",
             reason_detail="context/question.comment/answer.comment must be non-empty",
             sample_text=None,
             severity="skip",
         )
-        return []
+        return [], 1
     messages = [
         {
             "role": "system",
@@ -1368,103 +1326,92 @@ def _process_023(
         {"role": "user", "content": question},
         {"role": "assistant", "content": answer},
     ]
-    return [
-        make_row(
-            source=DATASET_SPECS["023"].source,
-            split=split,
-            content=context,
-            messages=messages,
-        )
-    ]
+    return (
+        [
+            _make_record(
+                record_id=record_id,
+                split_key=record_id,
+                source=DATASET_SPECS["023"].source,
+                data_usage="SFT",
+                content=context,
+                messages=messages,
+            )
+        ],
+        1,
+    )
 
 
-def _process_030(
-    split: str,
+def _build_030_records(
+    *,
     file_path: Path,
     obj: dict[str, Any],
-    recorder: QualityRecorder,
-) -> list[dict[str, Any]]:
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
     named_entity = obj.get("named_entity")
     if not isinstance(named_entity, list):
-        recorder.add(
+        _add_event(
+            recorder,
             dataset="030",
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=None,
             reason_code="missing_named_entity",
             reason_detail="named_entity must be a list",
             sample_text=None,
             severity="skip",
         )
-        return []
-    rows: list[dict[str, Any]] = []
+        return [], 0
+    records: list[BuiltRecord] = []
     for article_index, article in enumerate(named_entity):
-        contents = article.get("content")
-        titles = article.get("title")
-        if not isinstance(contents, list) or not isinstance(titles, list):
-            recorder.add(
+        record_id = str(article.get("id") or f"{file_path.stem}:{article_index}")
+        title_sentences = _extract_sentence_values(article.get("title") if isinstance(article, dict) else None)
+        body_sentences = _extract_sentence_values(article.get("content") if isinstance(article, dict) else None)
+        if not title_sentences:
+            _add_event(
+                recorder,
                 dataset="030",
                 split=split,
-                file_path=str(file_path),
-                record_id=str(article_index),
-                reason_code="invalid_article_arrays",
-                reason_detail="content/title must be lists",
+                file_path=file_path,
+                record_id=record_id,
+                reason_code="missing_title",
+                reason_detail="named_entity.title.sentence must contain at least one value",
                 sample_text=None,
                 severity="skip",
             )
             continue
-        body_sentences = []
-        for item in contents:
-            sentence = strip_text(item.get("sentence") if isinstance(item, dict) else None)
-            if sentence is not None:
-                body_sentences.append(sentence)
         if not body_sentences:
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="030",
                 split=split,
-                file_path=str(file_path),
-                record_id=str(article_index),
+                file_path=file_path,
+                record_id=record_id,
                 reason_code="empty_body",
-                reason_detail="content[*].sentence all empty",
+                reason_detail="named_entity.content.sentence all empty",
                 sample_text=None,
                 severity="skip",
             )
             continue
+        title = title_sentences[0]
         body = " ".join(body_sentences)
-        for title_index, item in enumerate(titles):
-            title = strip_text(item.get("sentence") if isinstance(item, dict) else None)
-            if title is None:
-                recorder.add(
-                    dataset="030",
-                    split=split,
-                    file_path=str(file_path),
-                    record_id=f"{article_index}:{title_index}",
-                    reason_code="empty_title",
-                    reason_detail="title sentence is empty",
-                    sample_text=None,
-                    severity="skip",
-                )
-                continue
-            messages = [
-                {"role": "system", "content": ARTICLE_SYSTEM},
-                {"role": "user", "content": body},
-                {"role": "assistant", "content": title},
-            ]
-            rows.append(
-                make_row(
-                    source=DATASET_SPECS["030"].source,
-                    split=split,
-                    content=title + "\n" + body,
-                    messages=messages,
-                )
+        records.append(
+            _make_record(
+                record_id=record_id,
+                split_key=record_id,
+                source=DATASET_SPECS["030"].source,
+                data_usage="PT",
+                content=title + "\n" + body,
+                messages=None,
             )
-    return rows
+        )
+    return records, len(named_entity)
 
 
 def _collect_reference_text(values: Any) -> str | None:
     if not isinstance(values, list):
         return None
-    parts = []
+    parts: list[str] = []
     for item in values:
         if not isinstance(item, dict):
             continue
@@ -1476,52 +1423,271 @@ def _collect_reference_text(values: Any) -> str | None:
     return " ".join(parts)
 
 
-def _process_nikl_newspaper_2020(
-    split: str,
+def _build_045_records(
+    *,
     file_path: Path,
     obj: dict[str, Any],
-    recorder: QualityRecorder,
-    selected_record_ids: tuple[str, ...] | None = None,
-) -> list[dict[str, Any]]:
-    allowed_record_ids = set(selected_record_ids) if selected_record_ids is not None else None
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
+    record_id = str(obj.get("info", {}).get("id") or file_path.stem)
+    utterances = obj.get("utterances")
+    if not isinstance(utterances, list):
+        _add_event(
+            recorder,
+            dataset="045",
+            split=split,
+            file_path=file_path,
+            record_id=record_id,
+            reason_code="missing_utterances",
+            reason_detail="utterances must be a list",
+            sample_text=None,
+            severity="skip",
+        )
+        return [], 1
+    normalized_turns: list[dict[str, str]] = []
+    user_evidences: list[str] = []
+    for item in utterances:
+        if not isinstance(item, dict):
+            _add_event(
+                recorder,
+                dataset="045",
+                split=split,
+                file_path=file_path,
+                record_id=record_id,
+                reason_code="skip_turn",
+                reason_detail="utterance item must be an object",
+                sample_text=None,
+                severity="fixup",
+            )
+            continue
+        role = item.get("role")
+        text = strip_text(item.get("text"))
+        if text is None:
+            _add_event(
+                recorder,
+                dataset="045",
+                split=split,
+                file_path=file_path,
+                record_id=record_id,
+                reason_code="skip_turn",
+                reason_detail="text missing",
+                sample_text=None,
+                severity="fixup",
+            )
+            continue
+        if role == "질문자":
+            normalized_turns.append({"role": "user", "content": text})
+            user_evidences.append(_collect_reference_text(item.get("reference_text")) or "")
+        elif role == "전문가":
+            normalized_turns.append({"role": "assistant", "content": text})
+        else:
+            _add_event(
+                recorder,
+                dataset="045",
+                split=split,
+                file_path=file_path,
+                record_id=record_id,
+                reason_code="skip_turn",
+                reason_detail=f"unsupported role={role}",
+                sample_text=truncate_sample(text),
+                severity="fixup",
+            )
+    final_turns = finalize_dialog_turns(
+        turns=normalized_turns,
+        dataset="045",
+        split=split,
+        file_path=file_path,
+        record_id=record_id,
+        recorder=recorder,
+    )
+    if final_turns is None:
+        return [], 1
+    evidence_index = 0
+    for turn in final_turns:
+        if turn["role"] != "user":
+            continue
+        evidence = user_evidences[evidence_index] if evidence_index < len(user_evidences) else ""
+        evidence_index += 1
+        if evidence:
+            turn["content"] = turn["content"] + "\n근거: " + evidence
+    messages = [
+        {"role": "system", "content": "user의 질문에 대해서 텍스트 근거 기반으로 대답을 하는 전문가야"},
+        *final_turns,
+    ]
+    return (
+        [
+            _make_record(
+                record_id=record_id,
+                split_key=record_id,
+                source=DATASET_SPECS["045"].source,
+                data_usage="SFT",
+                content=build_content_from_messages(messages),
+                messages=messages,
+            )
+        ],
+        1,
+    )
+
+
+def _build_046_records(
+    *,
+    file_path: Path,
+    obj: dict[str, Any],
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
+    info = obj.get("info")
+    utterances = obj.get("utterances")
+    record_id = str(obj.get("info", {}).get("id") or file_path.stem)
+    if not isinstance(info, dict) or not isinstance(utterances, list):
+        _add_event(
+            recorder,
+            dataset="046",
+            split=split,
+            file_path=file_path,
+            record_id=record_id,
+            reason_code="invalid_root",
+            reason_detail="info must be object and utterances must be list",
+            sample_text=None,
+            severity="skip",
+        )
+        return [], 1
+    situation = strip_text(info.get("situation"))
+    behaviors_raw = info.get("listener_behavior")
+    behaviors = [text for behavior in behaviors_raw or [] for text in [strip_text(behavior)] if text is not None]
+    if situation is None or not behaviors:
+        _add_event(
+            recorder,
+            dataset="046",
+            split=split,
+            file_path=file_path,
+            record_id=record_id,
+            reason_code="invalid_system_fields",
+            reason_detail="situation/listener_behavior missing",
+            sample_text=None,
+            severity="skip",
+        )
+        return [], 1
+    turns: list[dict[str, str]] = []
+    for item in utterances:
+        if not isinstance(item, dict):
+            _add_event(
+                recorder,
+                dataset="046",
+                split=split,
+                file_path=file_path,
+                record_id=record_id,
+                reason_code="skip_turn",
+                reason_detail="utterance item must be an object",
+                sample_text=None,
+                severity="fixup",
+            )
+            continue
+        text = strip_text(item.get("text"))
+        role = item.get("role")
+        if text is None:
+            _add_event(
+                recorder,
+                dataset="046",
+                split=split,
+                file_path=file_path,
+                record_id=record_id,
+                reason_code="skip_turn",
+                reason_detail="text missing",
+                sample_text=None,
+                severity="fixup",
+            )
+            continue
+        if role == "speaker":
+            mapped_role = "user"
+        elif role == "listener":
+            mapped_role = "assistant"
+        else:
+            _add_event(
+                recorder,
+                dataset="046",
+                split=split,
+                file_path=file_path,
+                record_id=record_id,
+                reason_code="skip_turn",
+                reason_detail=f"unsupported role={role}",
+                sample_text=truncate_sample(text),
+                severity="fixup",
+            )
+            continue
+        turns.append({"role": mapped_role, "content": text})
+    final_turns = finalize_dialog_turns(
+        turns=turns,
+        dataset="046",
+        split=split,
+        file_path=file_path,
+        record_id=record_id,
+        recorder=recorder,
+    )
+    if final_turns is None:
+        return [], 1
+    system = situation + "에 대해서 " + ", ".join(behaviors) + "에 맞추어서 대답을 해주는 친구가 되어줘"
+    messages = [{"role": "system", "content": system}, *final_turns]
+    return (
+        [
+            _make_record(
+                record_id=record_id,
+                split_key=record_id,
+                source=DATASET_SPECS["046"].source,
+                data_usage="SFT",
+                content=build_content_from_messages(messages),
+                messages=messages,
+            )
+        ],
+        1,
+    )
+
+
+def _build_nikl_newspaper_records(
+    *,
+    file_path: Path,
+    obj: dict[str, Any],
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
     documents = obj.get("document")
     if not isinstance(documents, list):
-        recorder.add(
+        _add_event(
+            recorder,
             dataset="nikl_newspaper_2020",
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=None,
             reason_code="missing_document",
             reason_detail="document must be a list",
             sample_text=None,
             severity="skip",
         )
-        return []
-    rows: list[dict[str, Any]] = []
+        return [], 0
+    records: list[BuiltRecord] = []
     for index, document in enumerate(documents):
+        record_id = str(document.get("id") or f"{file_path.stem}:{index}") if isinstance(document, dict) else f"{file_path.stem}:{index}"
         if not isinstance(document, dict):
-            if allowed_record_ids is not None:
-                continue
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="nikl_newspaper_2020",
                 split=split,
-                file_path=str(file_path),
-                record_id=f"{file_path.stem}:{index}",
+                file_path=file_path,
+                record_id=record_id,
                 reason_code="invalid_document",
                 reason_detail="document item must be an object",
                 sample_text=None,
                 severity="skip",
             )
             continue
-        record_id = str(document.get("id") or f"{file_path.stem}:{index}")
-        if allowed_record_ids is not None and record_id not in allowed_record_ids:
-            continue
         paragraphs = document.get("paragraph")
         if not isinstance(paragraphs, list):
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="nikl_newspaper_2020",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="missing_paragraph",
                 reason_detail="document.paragraph must be a list",
@@ -1530,14 +1696,14 @@ def _process_nikl_newspaper_2020(
             )
             continue
         valid_forms: list[str] = []
-        skipped_paragraph_events: list[QualityEvent] = []
+        skipped_events: list[QualityEvent] = []
         for paragraph_index, paragraph in enumerate(paragraphs):
             form_value = paragraph.get("form") if isinstance(paragraph, dict) else None
             form_text = strip_text(form_value)
             if form_text is not None:
                 valid_forms.append(form_text)
                 continue
-            skipped_paragraph_events.append(
+            skipped_events.append(
                 QualityEvent(
                     dataset="nikl_newspaper_2020",
                     split=split,
@@ -1550,11 +1716,13 @@ def _process_nikl_newspaper_2020(
                 )
             )
         if not valid_forms:
-            recorder.extend(skipped_paragraph_events)
-            recorder.add(
+            if recorder is not None:
+                recorder.extend(skipped_events)
+            _add_event(
+                recorder,
                 dataset="nikl_newspaper_2020",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="empty_paragraphs",
                 reason_detail="no usable paragraph.form remained after normalization",
@@ -1565,11 +1733,13 @@ def _process_nikl_newspaper_2020(
         title = valid_forms[0]
         body_paragraphs = valid_forms[1:]
         if not body_paragraphs:
-            recorder.extend(skipped_paragraph_events)
-            recorder.add(
+            if recorder is not None:
+                recorder.extend(skipped_events)
+            _add_event(
+                recorder,
                 dataset="nikl_newspaper_2020",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="title_only_document",
                 reason_detail="document has a title paragraph but no body paragraphs",
@@ -1577,7 +1747,7 @@ def _process_nikl_newspaper_2020(
                 severity="skip",
             )
             continue
-        if skipped_paragraph_events:
+        if recorder is not None and skipped_events:
             recorder.extend(
                 [
                     QualityEvent(
@@ -1590,67 +1760,66 @@ def _process_nikl_newspaper_2020(
                         sample_text=event.sample_text,
                         severity="fixup",
                     )
-                    for event in skipped_paragraph_events
+                    for event in skipped_events
                 ]
             )
-        body = "\n".join(body_paragraphs)
-        rows.append(
-            make_row(
+        records.append(
+            _make_record(
+                record_id=record_id,
+                split_key=record_id,
                 source=DATASET_SPECS["nikl_newspaper_2020"].source,
-                split=split,
-                content=f"제목: {title}\n내용: {body}",
+                data_usage="PT",
+                content=f"제목: {title}\n내용: " + "\n".join(body_paragraphs),
                 messages=None,
             )
         )
-    return rows
+    return records, len(documents)
 
 
-def _process_nikl_spoken(
-    split: str,
+def _build_nikl_spoken_records(
+    *,
     file_path: Path,
     obj: dict[str, Any],
-    recorder: QualityRecorder,
-    selected_record_ids: tuple[str, ...] | None = None,
-) -> list[dict[str, Any]]:
-    allowed_record_ids = set(selected_record_ids) if selected_record_ids is not None else None
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
     documents = obj.get("document")
     if not isinstance(documents, list):
-        recorder.add(
+        _add_event(
+            recorder,
             dataset="nikl_spoken",
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=None,
             reason_code="missing_document",
             reason_detail="document must be a list",
             sample_text=None,
             severity="skip",
         )
-        return []
-    rows: list[dict[str, Any]] = []
+        return [], 0
+    records: list[BuiltRecord] = []
     for index, document in enumerate(documents):
+        record_id = str(document.get("id") or f"{file_path.stem}:{index}") if isinstance(document, dict) else f"{file_path.stem}:{index}"
         if not isinstance(document, dict):
-            if allowed_record_ids is not None:
-                continue
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="nikl_spoken",
                 split=split,
-                file_path=str(file_path),
-                record_id=f"{file_path.stem}:{index}",
+                file_path=file_path,
+                record_id=record_id,
                 reason_code="invalid_document",
                 reason_detail="document item must be an object",
                 sample_text=None,
                 severity="skip",
             )
             continue
-        record_id = str(document.get("id") or f"{file_path.stem}:{index}")
-        if allowed_record_ids is not None and record_id not in allowed_record_ids:
-            continue
         utterances = document.get("utterance")
         if not isinstance(utterances, list):
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="nikl_spoken",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="missing_utterance",
                 reason_detail="document.utterance must be a list",
@@ -1659,14 +1828,14 @@ def _process_nikl_spoken(
             )
             continue
         valid_forms: list[str] = []
-        skipped_utterance_events: list[QualityEvent] = []
+        skipped_events: list[QualityEvent] = []
         for utterance_index, utterance in enumerate(utterances):
             form_value = utterance.get("form") if isinstance(utterance, dict) else None
             form_text = strip_text(form_value)
             if form_text is not None:
                 valid_forms.append(form_text)
                 continue
-            skipped_utterance_events.append(
+            skipped_events.append(
                 QualityEvent(
                     dataset="nikl_spoken",
                     split=split,
@@ -1679,11 +1848,13 @@ def _process_nikl_spoken(
                 )
             )
         if not valid_forms:
-            recorder.extend(skipped_utterance_events)
-            recorder.add(
+            if recorder is not None:
+                recorder.extend(skipped_events)
+            _add_event(
+                recorder,
                 dataset="nikl_spoken",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="empty_utterances",
                 reason_detail="no usable utterance.form remained after normalization",
@@ -1691,7 +1862,7 @@ def _process_nikl_spoken(
                 severity="skip",
             )
             continue
-        if skipped_utterance_events:
+        if recorder is not None and skipped_events:
             recorder.extend(
                 [
                     QualityEvent(
@@ -1704,67 +1875,67 @@ def _process_nikl_spoken(
                         sample_text=event.sample_text,
                         severity="fixup",
                     )
-                    for event in skipped_utterance_events
+                    for event in skipped_events
                 ]
             )
-        rows.append(
-            make_row(
+        records.append(
+            _make_record(
+                record_id=record_id,
+                split_key=record_id,
                 source=DATASET_SPECS["nikl_spoken"].source,
-                split=split,
+                data_usage="PT",
                 content="\n".join(valid_forms),
                 messages=None,
             )
         )
-    return rows
+    return records, len(documents)
 
 
-def _process_nikl_written(
-    split: str,
+def _build_nikl_written_records(
+    *,
     file_path: Path,
     obj: dict[str, Any],
-    recorder: QualityRecorder,
-    selected_record_ids: tuple[str, ...] | None = None,
-) -> list[dict[str, Any]]:
-    allowed_record_ids = set(selected_record_ids) if selected_record_ids is not None else None
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
     documents = obj.get("document")
     if not isinstance(documents, list):
-        recorder.add(
+        _add_event(
+            recorder,
             dataset="nikl_written",
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=None,
             reason_code="missing_document",
             reason_detail="document must be a list",
             sample_text=None,
             severity="skip",
         )
-        return []
-    rows: list[dict[str, Any]] = []
+        return [], 0
+    records: list[BuiltRecord] = []
     for index, document in enumerate(documents):
+        record_id = str(document.get("id") or f"{file_path.stem}:{index}") if isinstance(document, dict) else f"{file_path.stem}:{index}"
         if not isinstance(document, dict):
-            if allowed_record_ids is not None:
-                continue
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="nikl_written",
                 split=split,
-                file_path=str(file_path),
-                record_id=f"{file_path.stem}:{index}",
+                file_path=file_path,
+                record_id=record_id,
                 reason_code="invalid_document",
                 reason_detail="document item must be an object",
                 sample_text=None,
                 severity="skip",
             )
             continue
-        record_id = str(document.get("id") or f"{file_path.stem}:{index}")
-        if allowed_record_ids is not None and record_id not in allowed_record_ids:
-            continue
         metadata = document.get("metadata")
         title = strip_text(metadata.get("title") if isinstance(metadata, dict) else None)
         if title is None:
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="nikl_written",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="missing_title",
                 reason_detail="document.metadata.title must be a non-empty string",
@@ -1774,10 +1945,11 @@ def _process_nikl_written(
             continue
         paragraphs = document.get("paragraph")
         if not isinstance(paragraphs, list):
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="nikl_written",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="missing_paragraph",
                 reason_detail="document.paragraph must be a list",
@@ -1786,14 +1958,14 @@ def _process_nikl_written(
             )
             continue
         valid_forms: list[str] = []
-        skipped_paragraph_events: list[QualityEvent] = []
+        skipped_events: list[QualityEvent] = []
         for paragraph_index, paragraph in enumerate(paragraphs):
             form_value = paragraph.get("form") if isinstance(paragraph, dict) else None
             form_text = strip_text(form_value)
             if form_text is not None:
                 valid_forms.append(form_text)
                 continue
-            skipped_paragraph_events.append(
+            skipped_events.append(
                 QualityEvent(
                     dataset="nikl_written",
                     split=split,
@@ -1806,11 +1978,13 @@ def _process_nikl_written(
                 )
             )
         if not valid_forms:
-            recorder.extend(skipped_paragraph_events)
-            recorder.add(
+            if recorder is not None:
+                recorder.extend(skipped_events)
+            _add_event(
+                recorder,
                 dataset="nikl_written",
                 split=split,
-                file_path=str(file_path),
+                file_path=file_path,
                 record_id=record_id,
                 reason_code="empty_paragraphs",
                 reason_detail="no usable paragraph.form remained after normalization",
@@ -1818,7 +1992,7 @@ def _process_nikl_written(
                 severity="skip",
             )
             continue
-        if skipped_paragraph_events:
+        if recorder is not None and skipped_events:
             recorder.extend(
                 [
                     QualityEvent(
@@ -1831,222 +2005,57 @@ def _process_nikl_written(
                         sample_text=event.sample_text,
                         severity="fixup",
                     )
-                    for event in skipped_paragraph_events
+                    for event in skipped_events
                 ]
             )
-        rows.append(
-            make_row(
+        records.append(
+            _make_record(
+                record_id=record_id,
+                split_key=record_id,
                 source=DATASET_SPECS["nikl_written"].source,
-                split=split,
+                data_usage="PT",
                 content=f"제목: {title}\n내용: " + "\n".join(valid_forms),
                 messages=None,
             )
         )
-    return rows
+    return records, len(documents)
 
 
-def _process_045(
-    split: str,
-    file_path: Path,
-    obj: dict[str, Any],
-    recorder: QualityRecorder,
-) -> list[dict[str, Any]]:
-    utterances = obj.get("utterances")
-    if not isinstance(utterances, list):
-        recorder.add(
-            dataset="045",
-            split=split,
-            file_path=str(file_path),
-            record_id=str(obj.get("info", {}).get("id") or file_path.name),
-            reason_code="missing_utterances",
-            reason_detail="utterances must be a list",
-            sample_text=None,
-            severity="skip",
-        )
-        return []
-    turns: list[dict[str, str]] = []
-    assistant_evidence_after_user: list[str | None] = []
-    for item in utterances:
-        role = item.get("role")
-        text = strip_text(item.get("text"))
-        if text is None:
-            recorder.add(
-                dataset="045",
-                split=split,
-                file_path=str(file_path),
-                record_id=str(obj.get("info", {}).get("id") or file_path.name),
-                reason_code="skip_turn",
-                reason_detail="text missing",
-                sample_text=None,
-                severity="skip",
-            )
-            continue
-        evidence = _collect_reference_text(item.get("reference_text"))
-        if role == "질문자":
-            turns.append({"role": "user", "content": text, "evidence": evidence or ""})
-            assistant_evidence_after_user.append(None)
-        elif role == "전문가":
-            turns.append({"role": "assistant", "content": text, "evidence": evidence or ""})
-            if assistant_evidence_after_user:
-                assistant_evidence_after_user[-1] = evidence
-        else:
-            recorder.add(
-                dataset="045",
-                split=split,
-                file_path=str(file_path),
-                record_id=str(obj.get("info", {}).get("id") or file_path.name),
-                reason_code="skip_turn",
-                reason_detail=f"unsupported role={role}",
-                sample_text=truncate_sample(text),
-                severity="skip",
-            )
-    final_turns = finalize_dialog_turns(
-        turns=[{"role": turn["role"], "content": turn["content"]} for turn in turns],
-        dataset="045",
-        split=split,
-        file_path=file_path,
-        record_id=str(obj.get("info", {}).get("id") or file_path.name),
-        recorder=recorder,
-    )
-    if final_turns is None:
-        return []
-    user_index = 0
-    for turn in final_turns:
-        if turn["role"] != "user":
-            continue
-        direct_evidence = turns[user_index * 2].get("evidence", "") if user_index * 2 < len(turns) else ""
-        next_assistant_evidence = assistant_evidence_after_user[user_index] if user_index < len(assistant_evidence_after_user) else None
-        evidence = direct_evidence or next_assistant_evidence or ""
-        if evidence:
-            turn["content"] = turn["content"] + "\n근거: " + evidence
-        user_index += 1
-    messages = [
-        {"role": "system", "content": "user의 질문에 대해서 텍스트 근거 기반으로 대답을 하는 전문가야"},
-        *final_turns,
-    ]
-    return [
-        make_row(
-            source=DATASET_SPECS["045"].source,
-            split=split,
-            content=build_content_from_messages(messages),
-            messages=messages,
-        )
-    ]
-
-
-def _process_046(
-    split: str,
-    file_path: Path,
-    obj: dict[str, Any],
-    recorder: QualityRecorder,
-) -> list[dict[str, Any]]:
-    info = obj.get("info")
-    utterances = obj.get("utterances")
-    if not isinstance(info, dict) or not isinstance(utterances, list):
-        recorder.add(
-            dataset="046",
-            split=split,
-            file_path=str(file_path),
-            record_id=str(obj.get("info", {}).get("id") or file_path.name),
-            reason_code="invalid_root",
-            reason_detail="info must be object and utterances must be list",
-            sample_text=None,
-            severity="skip",
-        )
-        return []
-    situation = strip_text(info.get("situation"))
-    behaviors_raw = info.get("listener_behavior")
-    behaviors = []
-    if isinstance(behaviors_raw, list):
-        for behavior in behaviors_raw:
-            text = strip_text(behavior)
-            if text is not None:
-                behaviors.append(text)
-    if situation is None or not behaviors:
-        recorder.add(
-            dataset="046",
-            split=split,
-            file_path=str(file_path),
-            record_id=str(info.get("id") or file_path.name),
-            reason_code="invalid_system_fields",
-            reason_detail="situation/listener_behavior missing",
-            sample_text=None,
-            severity="skip",
-        )
-        return []
-    turns: list[dict[str, str]] = []
-    for item in utterances:
-        text = strip_text(item.get("text"))
-        role = item.get("role")
-        if text is None:
-            recorder.add(
-                dataset="046",
-                split=split,
-                file_path=str(file_path),
-                record_id=str(info.get("id") or file_path.name),
-                reason_code="skip_turn",
-                reason_detail="text missing",
-                sample_text=None,
-                severity="skip",
-            )
-            continue
-        if role == "speaker":
-            mapped = "user"
-        elif role == "listener":
-            mapped = "assistant"
-        else:
-            recorder.add(
-                dataset="046",
-                split=split,
-                file_path=str(file_path),
-                record_id=str(info.get("id") or file_path.name),
-                reason_code="skip_turn",
-                reason_detail=f"unsupported role={role}",
-                sample_text=truncate_sample(text),
-                severity="skip",
-            )
-            continue
-        turns.append({"role": mapped, "content": text})
-    final_turns = finalize_dialog_turns(
-        turns=turns,
-        dataset="046",
-        split=split,
-        file_path=file_path,
-        record_id=str(info.get("id") or file_path.name),
-        recorder=recorder,
-    )
-    if final_turns is None:
-        return []
-    system = situation + "에 대해서 " + ", ".join(behaviors) + "에 맞추어서 대답을 해주는 친구가 되어줘"
-    messages = [{"role": "system", "content": system}, *final_turns]
-    return [
-        make_row(
-            source=DATASET_SPECS["046"].source,
-            split=split,
-            content=build_content_from_messages(messages),
-            messages=messages,
-        )
-    ]
-
-
-def _process_gsm8k(
+def _build_gsm8k_records(
     *,
     file_path: Path,
-    split: str,
-    recorder: QualityRecorder,
-) -> list[dict[str, Any]]:
-    table = pq.read_table(file_path, columns=["question", "answer"])
-    rows: list[dict[str, Any]] = []
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
+    try:
+        table = pq.read_table(file_path, columns=["question", "answer"])
+    except Exception as exc:  # noqa: BLE001
+        _add_event(
+            recorder,
+            dataset="gsm8k",
+            split=split,
+            file_path=file_path,
+            record_id=None,
+            reason_code="parquet_read_error",
+            reason_detail=f"{type(exc).__name__}: {exc}",
+            sample_text=None,
+            severity="error",
+        )
+        return [], 0
+    items = table.to_pylist()
+    records: list[BuiltRecord] = []
     system = "당신은 수학 문제를 입력받으면 문제 풀이 과정을 포함하여 정답을 출력합니다."
-    for index, item in enumerate(table.to_pylist()):
+    for index, item in enumerate(items):
+        record_id = f"{file_path.name}:{index}"
         question = strip_text(item.get("question"))
         answer = strip_text(item.get("answer"))
         if question is None or answer is None:
-            recorder.add(
+            _add_event(
+                recorder,
                 dataset="gsm8k",
                 split=split,
-                file_path=str(file_path),
-                record_id=str(index),
+                file_path=file_path,
+                record_id=record_id,
                 reason_code="invalid_row",
                 reason_detail="question/answer must be non-empty strings",
                 sample_text=None,
@@ -2058,148 +2067,334 @@ def _process_gsm8k(
             {"role": "user", "content": question},
             {"role": "assistant", "content": answer},
         ]
-        rows.append(
-            make_row(
+        records.append(
+            _make_record(
+                record_id=record_id,
+                split_key=record_id,
                 source=DATASET_SPECS["gsm8k"].source,
-                split=split,
+                data_usage="SFT",
                 content=question + "\n" + answer,
                 messages=messages,
             )
         )
-    return rows
+    return records, len(items)
 
 
-def split_novel24_files(files: Sequence[Path]) -> tuple[set[Path], set[Path]]:
-    total = len(files)
-    if total == 1:
-        return {files[0]}, set()
-    train_count = max(1, int(total * 0.9))
-    if train_count >= total:
-        train_count = total - 1
-    return set(files[:train_count]), set(files[train_count:])
-
-
-def chunk_novel24_text(content: str) -> list[str]:
-    from .common import compute_token_count
-
-    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
-    lines = normalized.split("\n")
-    chunks: list[str] = []
-    buffer: list[str] = []
-    for line in lines:
-        candidate_lines = [*buffer, line]
-        candidate = "\n".join(candidate_lines)
-        if candidate.strip():
-            token_count = compute_token_count(content=candidate, messages=None)
-            if token_count <= 1024:
-                buffer = candidate_lines
-                continue
-        if buffer:
-            chunk = "\n".join(buffer).strip()
-            if chunk:
-                chunks.append(chunk)
-            buffer = [line]
-            if line.strip():
-                single_count = compute_token_count(content=line, messages=None)
-                if single_count > 1024:
-                    buffer = []
-        else:
-            if line.strip():
-                single_count = compute_token_count(content=line, messages=None)
-                if single_count <= 1024:
-                    buffer = [line]
-    if buffer:
-        chunk = "\n".join(buffer).strip()
-        if chunk:
-            chunks.append(chunk)
-    return chunks
-
-
-def _process_novel24(
+def _build_novel24_records(
     *,
     file_path: Path,
-    recorder: QualityRecorder,
-) -> list[dict[str, Any]]:
-    all_files = [
-        path
-        for _, path in resolve_input_files(DATASET_SPECS["novel24"], "train")
-        if path.suffix == ".txt" and not path.name.startswith(".") and path.name != ".DS_Store"
-    ]
-    train_files, val_files = split_novel24_files(stable_sorted_paths(all_files))
-    split = "train" if file_path in train_files else "val" if file_path in val_files else "train"
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
     try:
         text = file_path.read_text(encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
-        recorder.add(
+        _add_event(
+            recorder,
             dataset="novel24",
             split=split,
-            file_path=str(file_path),
+            file_path=file_path,
             record_id=file_path.name,
             reason_code="file_read_error",
             reason_detail=f"{type(exc).__name__}: {exc}",
             sample_text=None,
             severity="error",
         )
-        return []
-    chunks: list[str] = []
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    lines = normalized.split("\n")
-    buffer: list[str] = []
-    for line in lines:
-        candidate = "\n".join([*buffer, line])
-        stripped_candidate = candidate.strip()
-        if not stripped_candidate:
-            buffer.append(line)
-            continue
-        token_count = compute_token_count(content=candidate, messages=None)
-        if token_count <= 1024:
-            buffer.append(line)
-            continue
-        if buffer:
-            chunk = "\n".join(buffer).strip()
-            if chunk:
-                chunks.append(chunk)
-            buffer = []
-        line_text = line.strip()
-        if not line_text:
-            continue
-        line_count = compute_token_count(content=line_text, messages=None)
-        if line_count > 1024:
-            recorder.add(
-                dataset="novel24",
-                split=split,
-                file_path=str(file_path),
+        return [], 1
+    content = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not content:
+        _add_event(
+            recorder,
+            dataset="novel24",
+            split=split,
+            file_path=file_path,
+            record_id=file_path.name,
+            reason_code="empty_content",
+            reason_detail="txt content became empty after normalization",
+            sample_text=None,
+            severity="skip",
+        )
+        return [], 1
+    return (
+        [
+            _make_record(
                 record_id=file_path.name,
-                reason_code="line_too_long",
-                reason_detail="single line exceeds 1024 tokens",
-                sample_text=truncate_sample(line_text),
-                severity="skip",
-            )
-            continue
-        buffer = [line]
-    if buffer:
-        chunk = "\n".join(buffer).strip()
-        if chunk:
-            chunks.append(chunk)
-    rows: list[dict[str, Any]] = []
-    for index, chunk in enumerate(chunks):
-        rows.append(
-            make_row(
+                split_key=file_path.name,
                 source=DATASET_SPECS["novel24"].source,
-                split=split,
-                content=chunk,
+                data_usage="PT",
+                content=content,
                 messages=None,
             )
+        ],
+        1,
+    )
+
+
+def _build_hr_math_records(
+    *,
+    file_path: Path,
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
+    try:
+        table = pq.read_table(file_path, columns=["instruction", "response"])
+    except Exception as exc:  # noqa: BLE001
+        _add_event(
+            recorder,
+            dataset="HAERAE-HUB-HR-Instruct-Math-v0.1",
+            split=split,
+            file_path=file_path,
+            record_id=None,
+            reason_code="parquet_read_error",
+            reason_detail=f"{type(exc).__name__}: {exc}",
+            sample_text=None,
+            severity="error",
         )
-        if not chunk.strip():
-            recorder.add(
-                dataset="novel24",
+        return [], 0
+    items = table.to_pylist()
+    records: list[BuiltRecord] = []
+    for index, item in enumerate(items):
+        record_id = str(item.get("id") or f"{file_path.name}:{index}")
+        instruction = strip_text(item.get("instruction"))
+        response = strip_text(item.get("response"))
+        if instruction is None:
+            _add_event(
+                recorder,
+                dataset="HAERAE-HUB-HR-Instruct-Math-v0.1",
                 split=split,
-                file_path=str(file_path),
-                record_id=f"{file_path.name}:{index}",
-                reason_code="empty_chunk",
-                reason_detail="chunk became whitespace-only",
+                file_path=file_path,
+                record_id=record_id,
+                reason_code="missing_instruction",
+                reason_detail="instruction must be non-empty string",
                 sample_text=None,
                 severity="skip",
             )
-    return rows
+            continue
+        if response is None:
+            _add_event(
+                recorder,
+                dataset="HAERAE-HUB-HR-Instruct-Math-v0.1",
+                split=split,
+                file_path=file_path,
+                record_id=record_id,
+                reason_code="missing_response",
+                reason_detail="response must be non-empty string",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        messages = [
+            {"role": "system", "content": MATH_REASONING_SYSTEM},
+            {"role": "user", "content": instruction},
+            {"role": "assistant", "content": response},
+        ]
+        records.append(
+            _make_record(
+                record_id=record_id,
+                split_key=record_id,
+                source=DATASET_SPECS["HAERAE-HUB-HR-Instruct-Math-v0.1"].source,
+                data_usage="REASONING",
+                content=instruction + "\n" + response,
+                messages=messages,
+            )
+        )
+    return records, len(items)
+
+
+def _build_webtext_records(
+    *,
+    file_path: Path,
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
+    try:
+        table = pq.read_table(file_path, columns=["text", "source"])
+    except Exception as exc:  # noqa: BLE001
+        _add_event(
+            recorder,
+            dataset="HAERAE-HUB-KOREAN-WEBTEXT",
+            split=split,
+            file_path=file_path,
+            record_id=None,
+            reason_code="parquet_read_error",
+            reason_detail=f"{type(exc).__name__}: {exc}",
+            sample_text=None,
+            severity="error",
+        )
+        return [], 0
+    items = table.to_pylist()
+    records: list[BuiltRecord] = []
+    for index, item in enumerate(items):
+        record_id = f"{file_path.name}:{index}"
+        split_key = str(item.get("source") or record_id)
+        content = strip_text(item.get("text"))
+        if content is None:
+            _add_event(
+                recorder,
+                dataset="HAERAE-HUB-KOREAN-WEBTEXT",
+                split=split,
+                file_path=file_path,
+                record_id=record_id,
+                reason_code="empty_text",
+                reason_detail="text must be non-empty string",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        records.append(
+            _make_record(
+                record_id=record_id,
+                split_key=split_key,
+                source=DATASET_SPECS["HAERAE-HUB-KOREAN-WEBTEXT"].source,
+                data_usage="PT",
+                content=content,
+                messages=None,
+            )
+        )
+    return records, len(items)
+
+
+def _build_namu_records(
+    *,
+    file_path: Path,
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
+    obj = _read_json(file_path, dataset_id="namu", split=split, recorder=recorder)
+    if obj is None:
+        return [], 0
+    raw_items = obj if isinstance(obj, list) else [obj]
+    records: list[BuiltRecord] = []
+    for index, item in enumerate(raw_items):
+        record_id = f"{file_path.stem}:{index}"
+        if not isinstance(item, dict):
+            _add_event(
+                recorder,
+                dataset="namu",
+                split=split,
+                file_path=file_path,
+                record_id=record_id,
+                reason_code="malformed_canonical_like_row",
+                reason_detail="row must be an object",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        source = strip_text(item.get("source")) or f"namu.{file_path.stem}"
+        content = strip_text(item.get("content"))
+        if content is None:
+            _add_event(
+                recorder,
+                dataset="namu",
+                split=split,
+                file_path=file_path,
+                record_id=source,
+                reason_code="empty_content",
+                reason_detail="content must be non-empty string",
+                sample_text=None,
+                severity="skip",
+            )
+            continue
+        records.append(
+            _make_record(
+                record_id=source,
+                split_key=source,
+                source=source,
+                data_usage="PT",
+                content=content,
+                messages=None,
+            )
+        )
+    return records, len(raw_items)
+
+
+def _build_nohurry_records(
+    *,
+    file_path: Path,
+    split: str | None,
+    recorder: QualityRecorder | None,
+) -> tuple[list[BuiltRecord], int]:
+    records: list[BuiltRecord] = []
+    raw_count = 0
+    try:
+        with file_path.open("r", encoding="utf-8") as f:
+            for line_index, line in enumerate(f):
+                stripped_line = line.strip()
+                if not stripped_line:
+                    continue
+                raw_count += 1
+                try:
+                    item = json.loads(stripped_line)
+                except Exception as exc:  # noqa: BLE001
+                    _add_event(
+                        recorder,
+                        dataset="nohurry-Opus-4.6-Reasoning-3000x-filtered",
+                        split=split,
+                        file_path=file_path,
+                        record_id=f"{file_path.name}:{line_index}",
+                        reason_code="jsonl_parse_error",
+                        reason_detail=f"{type(exc).__name__}: {exc}",
+                        sample_text=truncate_sample(stripped_line),
+                        severity="skip",
+                    )
+                    continue
+                record_id = str(item.get("id") or f"{file_path.name}:{line_index}")
+                problem = strip_text(item.get("problem"))
+                thinking = strip_text(item.get("thinking"))
+                solution = strip_text(item.get("solution"))
+                if problem is None:
+                    _add_event(
+                        recorder,
+                        dataset="nohurry-Opus-4.6-Reasoning-3000x-filtered",
+                        split=split,
+                        file_path=file_path,
+                        record_id=record_id,
+                        reason_code="missing_problem",
+                        reason_detail="problem must be non-empty string",
+                        sample_text=None,
+                        severity="skip",
+                    )
+                    continue
+                if thinking is None or solution is None:
+                    _add_event(
+                        recorder,
+                        dataset="nohurry-Opus-4.6-Reasoning-3000x-filtered",
+                        split=split,
+                        file_path=file_path,
+                        record_id=record_id,
+                        reason_code="missing_reasoning_text",
+                        reason_detail="thinking and solution must be non-empty strings",
+                        sample_text=None,
+                        severity="skip",
+                    )
+                    continue
+                assistant = thinking + "\n" + solution
+                messages = [
+                    {"role": "system", "content": MATH_REASONING_SYSTEM},
+                    {"role": "user", "content": problem},
+                    {"role": "assistant", "content": assistant},
+                ]
+                records.append(
+                    _make_record(
+                        record_id=record_id,
+                        split_key=record_id,
+                        source=DATASET_SPECS["nohurry-Opus-4.6-Reasoning-3000x-filtered"].source,
+                        data_usage="REASONING",
+                        content=problem + "\n" + assistant,
+                        messages=messages,
+                    )
+                )
+    except Exception as exc:  # noqa: BLE001
+        _add_event(
+            recorder,
+            dataset="nohurry-Opus-4.6-Reasoning-3000x-filtered",
+            split=split,
+            file_path=file_path,
+            record_id=None,
+            reason_code="jsonl_read_error",
+            reason_detail=f"{type(exc).__name__}: {exc}",
+            sample_text=None,
+            severity="error",
+        )
+        return [], raw_count
+    return records, raw_count
