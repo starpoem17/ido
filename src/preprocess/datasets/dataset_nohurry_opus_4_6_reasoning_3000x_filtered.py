@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -17,8 +17,8 @@ from src.preprocess.runner import run_stage_entrypoint
 OUTPUT_ROOT = Path("data/korean_processed/_staging")
 TARGET_SPLITS = ("train", "val")
 WORKERS = 7
-SHARD_ROW_LIMIT = 50000
-OVERWRITE_OUTPUT = True
+SHARD_ROW_LIMIT = 5000
+OVERWRITE_OUTPUT = False
 LIMIT_FILES = None
 ENABLE_TQDM = True
 ENABLE_DEBUG_LOG = True
@@ -30,7 +30,7 @@ if __name__ == "__main__":
     common.ENABLE_DEBUG_LOG = ENABLE_DEBUG_LOG
     common.TQDM_MININTERVAL_SEC = TQDM_MININTERVAL_SEC
     run_stage_entrypoint(
-        dataset_id="novel24",
+        dataset_id="nohurry-Opus-4.6-Reasoning-3000x-filtered",
         output_root=OUTPUT_ROOT,
         target_splits=TARGET_SPLITS,
         workers=WORKERS,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+from dataclasses import asdict
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -43,7 +44,26 @@ class StageConfig:
     dataset_id: str
 
 
-def stage_dataset(config: StageConfig) -> None:
+@dataclass(frozen=True)
+class StageResult:
+    dataset_id: str
+    split: str
+    source: str
+    input_files: int
+    raw_candidate_count: int
+    valid_candidate_count: int
+    output_rows: int
+    shard_files: int
+    quality_event_count: int
+    manifest_path: str
+    quality_summary_path: str
+    quality_events_path: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def stage_dataset(config: StageConfig) -> StageResult:
     spec = DATASET_SPECS[config.dataset_id]
     file_items = resolve_input_files(spec, config.target_split)
     if config.limit_files is not None:
@@ -101,8 +121,10 @@ def stage_dataset(config: StageConfig) -> None:
         _flush_shard(dataset_root, shard_rows, shard_index)
         aggregate["shard_files"] += 1
     recorder.write_jsonl(meta_root / f"quality_events_{config.target_split}.jsonl")
+    quality_events_path = meta_root / f"quality_events_{config.target_split}.jsonl"
     quality_summary = recorder.to_summary()
-    write_json(meta_root / f"quality_summary_{config.target_split}.json", quality_summary)
+    quality_summary_path = meta_root / f"quality_summary_{config.target_split}.json"
+    write_json(quality_summary_path, quality_summary)
     split_plan_stats = get_split_plan_stats(spec.dataset_id)
     stage_manifest = {
         "dataset_id": spec.dataset_id,
@@ -117,9 +139,24 @@ def stage_dataset(config: StageConfig) -> None:
         "quality_event_count": len(recorder.events),
         "split_plan_stats": split_plan_stats,
     }
-    write_json(meta_root / f"stage_manifest_{config.target_split}.json", stage_manifest)
+    manifest_path = meta_root / f"stage_manifest_{config.target_split}.json"
+    write_json(manifest_path, stage_manifest)
     log(
         f"[stage:{spec.dataset_id}:{config.target_split}] completed rows={aggregate['output_rows']} shards={aggregate['shard_files']} quality_events={len(recorder.events)}"
+    )
+    return StageResult(
+        dataset_id=spec.dataset_id,
+        split=config.target_split,
+        source=spec.source,
+        input_files=len(file_items),
+        raw_candidate_count=aggregate["raw_candidate_count"],
+        valid_candidate_count=aggregate["valid_candidate_count"],
+        output_rows=aggregate["output_rows"],
+        shard_files=aggregate["shard_files"],
+        quality_event_count=len(recorder.events),
+        manifest_path=str(manifest_path),
+        quality_summary_path=str(quality_summary_path),
+        quality_events_path=str(quality_events_path),
     )
 
 
