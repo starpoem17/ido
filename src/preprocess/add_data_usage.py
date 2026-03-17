@@ -36,7 +36,7 @@ def collect_target_paths() -> list[Path]:
 
 def build_data_usage_column(messages: list[Any]) -> tuple[pa.Array, Counter[str]]:
     values: list[str] = []
-    stats = Counter(total_rows=0, pt_rows=0, ft_rows=0, empty_messages_rows=0)
+    stats = Counter(total_rows=0, pt_rows=0, sft_rows=0, empty_messages_rows=0)
     for item in messages:
         stats["total_rows"] += 1
         if item is None:
@@ -48,9 +48,9 @@ def build_data_usage_column(messages: list[Any]) -> tuple[pa.Array, Counter[str]
             stats["pt_rows"] += 1
             stats["empty_messages_rows"] += 1
             continue
-        values.append("FT")
-        stats["ft_rows"] += 1
-    return pa.array(values, type=pa.large_string()), stats
+        values.append("SFT")
+        stats["sft_rows"] += 1
+    return pa.array(values, type=pa.string()), stats
 
 
 def transform_table(table: pa.Table) -> tuple[pa.Table, Counter[str]]:
@@ -62,9 +62,20 @@ def transform_table(table: pa.Table) -> tuple[pa.Table, Counter[str]]:
         names.pop(index)
     if "messages" not in names:
         raise ValueError("messages column is missing")
+    if "source" not in names:
+        raise ValueError("source column is missing")
     data_usage_column, stats = build_data_usage_column(table.column("messages").to_pylist())
-    columns = [data_usage_column, *[table.column(name) for name in names]]
-    new_names = ["data_usage", *names]
+    source_index = names.index("source")
+    columns = [
+        *[table.column(name) for name in names[: source_index + 1]],
+        data_usage_column,
+        *[table.column(name) for name in names[source_index + 1 :]],
+    ]
+    new_names = [
+        *names[: source_index + 1],
+        "data_usage",
+        *names[source_index + 1 :],
+    ]
     transformed = pa.Table.from_arrays(columns, names=new_names, metadata=table.schema.metadata)
     stats["had_existing_data_usage"] = int(had_existing_data_usage)
     return transformed, stats
@@ -80,7 +91,7 @@ def rewrite_parquet_file(path: Path) -> dict[str, Any]:
         "path": str(path),
         "rows": stats["total_rows"],
         "pt_rows": stats["pt_rows"],
-        "ft_rows": stats["ft_rows"],
+        "sft_rows": stats["sft_rows"],
         "empty_messages_rows": stats["empty_messages_rows"],
         "had_existing_data_usage": bool(stats["had_existing_data_usage"]),
         "status": "ok",
@@ -95,7 +106,7 @@ def process_one_file(path: Path) -> dict[str, Any]:
             "path": str(path),
             "rows": 0,
             "pt_rows": 0,
-            "ft_rows": 0,
+            "sft_rows": 0,
             "empty_messages_rows": 0,
             "had_existing_data_usage": False,
             "status": "error",
@@ -109,18 +120,18 @@ def main() -> None:
     common.TQDM_MININTERVAL_SEC = TQDM_MININTERVAL_SEC
 
     target_paths = collect_target_paths()
-    log(f"[add_data_split] files={len(target_paths)} workers={WORKERS}")
+    log(f"[add_data_usage] files={len(target_paths)} workers={WORKERS}")
     aggregate = Counter(
         files_total=len(target_paths),
         files_ok=0,
         files_error=0,
         rows_total=0,
         pt_rows=0,
-        ft_rows=0,
+        sft_rows=0,
         empty_messages_rows=0,
         overwritten_existing_data_usage=0,
     )
-    progress = progress_bar(total=len(target_paths), desc="add_data_split")
+    progress = progress_bar(total=len(target_paths), desc="add_data_usage")
     with ProcessPoolExecutor(max_workers=WORKERS) as executor:
         futures = {executor.submit(process_one_file, path): path for path in target_paths}
         for future in as_completed(futures):
@@ -130,29 +141,29 @@ def main() -> None:
                 aggregate["files_ok"] += 1
                 aggregate["rows_total"] += result["rows"]
                 aggregate["pt_rows"] += result["pt_rows"]
-                aggregate["ft_rows"] += result["ft_rows"]
+                aggregate["sft_rows"] += result["sft_rows"]
                 aggregate["empty_messages_rows"] += result["empty_messages_rows"]
                 if result["had_existing_data_usage"] and OVERWRITE_EXISTING_DATA_USAGE:
                     aggregate["overwritten_existing_data_usage"] += 1
                 log(
-                    "[add_data_split:file] "
+                    "[add_data_usage:file] "
                     f"path={result['path']} rows={result['rows']} pt={result['pt_rows']} "
-                    f"ft={result['ft_rows']} empty_messages={result['empty_messages_rows']}"
+                    f"sft={result['sft_rows']} empty_messages={result['empty_messages_rows']}"
                 )
                 if result["empty_messages_rows"] > 0:
                     log(
-                        "[add_data_split:warning] "
+                        "[add_data_usage:warning] "
                         f"path={result['path']} empty_messages_rows={result['empty_messages_rows']} treated_as=PT"
                     )
             else:
                 aggregate["files_error"] += 1
-                log(f"[add_data_split:error] path={result['path']} error={result['error']}")
+                log(f"[add_data_usage:error] path={result['path']} error={result['error']}")
     progress.close()
     log(
-        "[add_data_split] completed "
+        "[add_data_usage] completed "
         f"files_ok={aggregate['files_ok']} files_error={aggregate['files_error']} "
         f"rows_total={aggregate['rows_total']} pt_rows={aggregate['pt_rows']} "
-        f"ft_rows={aggregate['ft_rows']} empty_messages_rows={aggregate['empty_messages_rows']}"
+        f"sft_rows={aggregate['sft_rows']} empty_messages_rows={aggregate['empty_messages_rows']}"
     )
 
 

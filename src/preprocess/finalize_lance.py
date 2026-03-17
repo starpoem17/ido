@@ -54,7 +54,7 @@ TARGET_SPLITS = ("train", "val")
 CHUNK_TARGET_BYTES = 1_073_741_824
 OVERWRITE_OUTPUT = False
 CREATE_SCALAR_INDICES = True
-INDEX_COLUMNS = ("source", "split", "token_count")
+INDEX_COLUMNS = ("source", "data_usage", "split", "token_count")
 ENABLE_TQDM = True
 ENABLE_DEBUG_LOG = True
 TQDM_MININTERVAL_SEC = 1.0
@@ -86,6 +86,7 @@ def main() -> None:
         "content_rows": 0,
         "messages_rows": 0,
         "source_rows": Counter(),
+        "data_usage_rows": Counter(),
         "split_rows": Counter(),
         "chunk_rows": {},
         "chunk_bytes": {},
@@ -159,6 +160,7 @@ def main() -> None:
             for chunk_name in sorted(manifest_stats["chunk_rows"])
         ],
         "source_rows": dict(sorted(manifest_stats["source_rows"].items())),
+        "data_usage_rows": dict(sorted(manifest_stats["data_usage_rows"].items())),
         "split_rows": dict(sorted(manifest_stats["split_rows"].items())),
         "rows_total": manifest_stats["rows_total"],
         "content_rows": manifest_stats["content_rows"],
@@ -197,6 +199,7 @@ def _flush_chunk(
     manifest_stats["rows_total"] += table.num_rows
     for row in rows:
         manifest_stats["source_rows"][row["source"]] += 1
+        manifest_stats["data_usage_rows"][row["data_usage"]] += 1
         manifest_stats["split_rows"][row["split"]] += 1
         if row["content"] is not None:
             manifest_stats["content_rows"] += 1

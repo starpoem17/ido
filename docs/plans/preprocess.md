@@ -7,24 +7,26 @@
 핵심 원칙:
 1. `docs/personal/preprocess/*.md`를 최우선 기준으로 따른다.
 2. 데이터셋별 전처리는 독립 실행 가능해야 한다.
-3. 모든 데이터셋 결과는 같은 5개 feature 스키마로 append 가능해야 한다.
-4. 데이터셋별 차이는 `source`, `content`, `messages` 생성 규칙으로만 구분한다.
+3. 모든 데이터셋 결과는 같은 6개 feature 스키마로 append 가능해야 한다.
+4. 데이터셋별 차이는 `source`, `data_usage`, `content`, `messages` 생성 규칙으로만 구분한다.
 
 ---
 
 ## 1. 공통 계약
 
 ### 1.1 Canonical Row Schema
-최종 row는 아래 5개 feature만 사용한다.
+최종 row는 아래 6개 feature만 사용한다.
 
 1. `source: String`
-2. `split: String`
-3. `content: String | null`
-4. `messages: List[Struct{role: String, content: String}] | null`
-5. `token_count: int32`
+2. `data_usage: String`
+3. `split: String`
+4. `content: String | null`
+5. `messages: List[Struct{role: String, content: String}] | null`
+6. `token_count: int32`
 
 강제 규칙:
 - `content`와 `messages`는 둘 다 nullable이지만 최소 하나는 반드시 채운다.
+- `data_usage`는 `PT`, `SFT`, `REASONING`만 허용한다.
 - PT 학습은 `content`를 사용한다.
 - FT 학습은 `messages`를 사용한다.
 - 특정 학습 모드에서 필요한 필드가 `null`인 row는 그 모드에서만 제외한다.
@@ -72,13 +74,14 @@ data/
 
 ### 1.6 공통 검증 항목
 1. 스키마 검증
-- feature 5개와 타입 일치
+- feature 6개와 타입 일치
 - `split` 허용값 검증
 - `content/messages` 최소 1개 존재 규칙 검증
 
 2. 수량 검증
 - 입력 레코드 수 대비 출력 row 수, 제외 row 수, 보정 row 수 집계
 - `split`별 집계 일치
+- `data_usage`별 집계 일치
 - `source`별 집계 일치
 
 3. 샤딩 검증
@@ -101,6 +104,7 @@ manifest 필수 항목:
 - run 시각
 - chunk별 bytes/rows
 - source별 rows
+- data_usage별 rows
 - split별 rows
 - `content` 보유 rows / `messages` 보유 rows
 

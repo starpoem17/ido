@@ -69,6 +69,7 @@ class DatasetRuleTests(unittest.TestCase):
             content="판결문 본문",
             messages=None,
         )
+        self.assertEqual(row["data_usage"], "PT")
         self.assertEqual(row["messages"], None)
         self.assertGreater(row["token_count"], 0)
 

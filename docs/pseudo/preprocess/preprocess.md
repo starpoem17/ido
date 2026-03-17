@@ -5,19 +5,21 @@
 데이터셋별 차이는 각 개별 pseudo 문서에서 정의하고, 여기서는 공통 스키마, 직렬화, token_count, Lance append 절차만 고정한다.
 
 ## 공통 스키마
-최종 row는 항상 아래 5개 feature만 가진다.
+최종 row는 항상 아래 6개 feature만 가진다.
 
 1. `source`
-2. `split`
-3. `content`
-4. `messages`
-5. `token_count`
+2. `data_usage`
+3. `split`
+4. `content`
+5. `messages`
+6. `token_count`
 
 구현할 때는 다음을 강제한다.
 
 1. `content`와 `messages`는 둘 다 nullable이지만 최소 하나는 반드시 채운다.
-2. `split`은 `train` 또는 `val`만 허용한다.
-3. 모든 row는 같은 PyArrow schema로 캐스팅 가능해야 한다.
+2. `data_usage`는 `PT`, `SFT`, `REASONING`만 허용한다.
+3. `split`은 `train` 또는 `val`만 허용한다.
+4. 모든 row는 같은 PyArrow schema로 캐스팅 가능해야 한다.
 
 ## 공통 직렬화 규칙
 `token_count`는 저장된 row를 실제 학습 입력 문자열로 바꾼 뒤 계산한다.
@@ -79,18 +81,19 @@
 
 1. chunk별 경로, row 수, 바이트 수를 집계한다.
 2. source별 row 수를 집계한다.
-3. split별 row 수를 집계한다.
-4. `content` 보유 row 수와 `messages` 보유 row 수를 집계한다.
-5. `schema_version`과 `token_count_version`을 manifest에 기록한다.
-6. 품질 이벤트를 사유별로 집계한다.
-7. 품질 이벤트 샘플을 사유별 최대 20건 저장한다.
-8. manifest와 quality report를 `_manifests/` 아래에 저장한다.
-9. 모든 데이터셋 append가 끝난 뒤 `_indices`를 한 번만 생성한다.
+3. data_usage별 row 수를 집계한다.
+4. split별 row 수를 집계한다.
+5. `content` 보유 row 수와 `messages` 보유 row 수를 집계한다.
+6. `schema_version`과 `token_count_version`을 manifest에 기록한다.
+7. 품질 이벤트를 사유별로 집계한다.
+8. 품질 이벤트 샘플을 사유별 최대 20건 저장한다.
+9. manifest와 quality report를 `_manifests/` 아래에 저장한다.
+10. 모든 데이터셋 append가 끝난 뒤 `_indices`를 한 번만 생성한다.
 
 ## 최종 검증
 구현이 끝난 뒤에는 아래를 확인한다.
 
-1. 모든 row가 5개 feature만 사용하는가
+1. 모든 row가 6개 feature만 사용하는가
 2. 모든 row에서 `content/messages` 중 최소 하나가 채워져 있는가
 3. `token_count`가 직렬화 재계산 결과와 일치하는가
 4. chunk별 row 수 합계와 전체 row 수가 일치하는가

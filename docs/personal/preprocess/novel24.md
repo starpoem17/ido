@@ -6,6 +6,7 @@ PT용 데이터로써 단순히 웹소설 스타일의 한국어 문장 구조�
 ex)
 {
     "source" : "novel24",
+    "data_usage" : "PT",
     "split" : "train",
     "content" : "0살부터 슈퍼스타
     
@@ -63,4 +64,3 @@ ex)
     "messages" : null,
     "token_count" : null
 }
-

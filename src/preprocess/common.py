@@ -6,11 +6,15 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
-from tokenizers import Tokenizer
 from tqdm import tqdm
+
+if TYPE_CHECKING:
+    from tokenizers import Tokenizer
+else:
+    Tokenizer = Any
 
 
 # =========================
@@ -18,7 +22,7 @@ from tqdm import tqdm
 # =========================
 TOKENIZER_JSON_PATH = Path("data/tokenizers/korean_bbpe_v1/tokenizer.json")
 TOKEN_COUNT_VERSION = "korean_bbpe_v1"
-SCHEMA_VERSION = "korean_processed_v1"
+SCHEMA_VERSION = "korean_processed_v2"
 ENABLE_TQDM = True
 ENABLE_DEBUG_LOG = True
 TQDM_MININTERVAL_SEC = 1.0
@@ -35,6 +39,7 @@ MESSAGE_STRUCT = pa.struct(
 CANONICAL_SCHEMA = pa.schema(
     [
         pa.field("source", pa.string(), nullable=False),
+        pa.field("data_usage", pa.string(), nullable=False),
         pa.field("split", pa.string(), nullable=False),
         pa.field("content", pa.string(), nullable=True),
         pa.field("messages", pa.list_(MESSAGE_STRUCT), nullable=True),
@@ -43,6 +48,7 @@ CANONICAL_SCHEMA = pa.schema(
 )
 
 ALLOWED_SPLITS = {"train", "val"}
+ALLOWED_DATA_USAGES = {"PT", "SFT", "REASONING"}
 SPECIAL_TOKEN_BY_ROLE = {
     "system": "<|system|>",
     "user": "<|user|>",
@@ -99,8 +105,10 @@ def progress_bar(*, total: int | None, desc: str) -> tqdm[Any]:
 def get_tokenizer() -> Tokenizer:
     global _TOKENIZER
     if _TOKENIZER is None:
+        from tokenizers import Tokenizer as TokenizerImpl
+
         log(f"Loading tokenizer from {TOKENIZER_JSON_PATH}")
-        _TOKENIZER = Tokenizer.from_file(str(TOKENIZER_JSON_PATH))
+        _TOKENIZER = TokenizerImpl.from_file(str(TOKENIZER_JSON_PATH))
     return _TOKENIZER
 
 
@@ -159,7 +167,15 @@ def build_content_from_messages(messages: Sequence[dict[str, str]]) -> str:
     ) 
 
 
+def infer_data_usage(messages: Sequence[dict[str, str]] | None) -> str:
+    if messages:
+        return "SFT"
+    return "PT"
+
+
 def validate_row(row: dict[str, Any]) -> None:
+    if row["data_usage"] not in ALLOWED_DATA_USAGES:
+        raise ValueError(f"unsupported data_usage: {row['data_usage']}")
     if row["split"] not in ALLOWED_SPLITS:
         raise ValueError(f"unsupported split: {row['split']}")
     if row["content"] is None and row["messages"] is None:

@@ -63,7 +63,7 @@ ex)
         {"role" : "user", "content" : "임진왜란이 언제 일어났는지 알려줘."},
         {"role" : "assistant", "content" : "임진왜란은 선조 25년, 기원후 1592년에 발발했습니다."}
     ],
-    "token_count" : 456
+    "token_count" : null
 }
 
 {
@@ -72,7 +72,7 @@ ex)
     "split" : "train",
     "content" : "...",
     "messages" : null,
-    "token_count" : 123
+    "token_count" : null
 }
 
 보다 구체적인 데이터 종류별 포맷은 docs/personal/preprocess 안의 md 파일들을 참조하여 확인한다

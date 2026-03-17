@@ -7,7 +7,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from preprocess.add_data_usage import build_data_usage_column, rewrite_parquet_file, transform_table
+from src.preprocess.add_data_usage import build_data_usage_column, rewrite_parquet_file, transform_table
 
 
 MESSAGE_TYPE = pa.list_(
@@ -20,8 +20,8 @@ MESSAGE_TYPE = pa.list_(
 )
 
 
-class AddDataSplitTests(unittest.TestCase):
-    def test_build_data_usage_column_assigns_pt_ft_and_empty_list(self) -> None:
+class AddDataUsageTests(unittest.TestCase):
+    def test_build_data_usage_column_assigns_pt_sft_and_empty_list(self) -> None:
         column, stats = build_data_usage_column(
             [
                 None,
@@ -29,13 +29,13 @@ class AddDataSplitTests(unittest.TestCase):
                 [{"content": "u", "role": "user"}],
             ]
         )
-        self.assertEqual(column.to_pylist(), ["PT", "PT", "FT"])
+        self.assertEqual(column.to_pylist(), ["PT", "PT", "SFT"])
         self.assertEqual(stats["total_rows"], 3)
         self.assertEqual(stats["pt_rows"], 2)
-        self.assertEqual(stats["ft_rows"], 1)
+        self.assertEqual(stats["sft_rows"], 1)
         self.assertEqual(stats["empty_messages_rows"], 1)
 
-    def test_transform_table_places_data_usage_first(self) -> None:
+    def test_transform_table_places_data_usage_after_source(self) -> None:
         table = pa.Table.from_arrays(
             [
                 pa.array(["src-a", "src-b"], type=pa.large_string()),
@@ -53,21 +53,22 @@ class AddDataSplitTests(unittest.TestCase):
             names=["source", "split", "content", "messages", "token_count"],
         )
         transformed, stats = transform_table(table)
-        self.assertEqual(transformed.column_names[0], "data_usage")
-        self.assertEqual(transformed.column("data_usage").to_pylist(), ["PT", "FT"])
+        self.assertEqual(transformed.column_names[0], "source")
+        self.assertEqual(transformed.column_names[1], "data_usage")
+        self.assertEqual(transformed.column("data_usage").to_pylist(), ["PT", "SFT"])
         self.assertEqual(stats["had_existing_data_usage"], 0)
 
     def test_transform_table_overwrites_existing_data_usage(self) -> None:
         table = pa.Table.from_arrays(
             [
-                pa.array(["FT"], type=pa.large_string()),
                 pa.array(["src-a"], type=pa.large_string()),
+                pa.array(["FT"], type=pa.large_string()),
                 pa.array(["train"], type=pa.large_string()),
                 pa.array(["c1"], type=pa.large_string()),
                 pa.array([None], type=MESSAGE_TYPE),
                 pa.array([1], type=pa.int32()),
             ],
-            names=["data_usage", "source", "split", "content", "messages", "token_count"],
+            names=["source", "data_usage", "split", "content", "messages", "token_count"],
         )
         transformed, stats = transform_table(table)
         self.assertEqual(transformed.column("data_usage").to_pylist(), ["PT"])
@@ -98,8 +99,9 @@ class AddDataSplitTests(unittest.TestCase):
 
             rewritten = pq.read_table(path)
             self.assertEqual(result["status"], "ok")
-            self.assertEqual(rewritten.column_names[0], "data_usage")
-            self.assertEqual(rewritten.column("data_usage").to_pylist(), ["PT", "FT"])
+            self.assertEqual(rewritten.column_names[0], "source")
+            self.assertEqual(rewritten.column_names[1], "data_usage")
+            self.assertEqual(rewritten.column("data_usage").to_pylist(), ["PT", "SFT"])
             self.assertFalse(path.with_suffix(".parquet.tmp").exists())
 
 

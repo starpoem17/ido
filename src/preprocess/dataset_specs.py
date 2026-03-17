@@ -15,6 +15,7 @@ from .common import (
     build_content_from_messages,
     compact_spaces,
     compute_token_count,
+    infer_data_usage,
     stable_sorted_paths,
     strip_text,
     truncate_sample,
@@ -148,7 +149,7 @@ DATASET_SPECS: dict[str, DatasetSpec] = {
     ),
     "nikl_written": DatasetSpec(
         dataset_id="nikl_written",
-        source="NIKL_WRITTEN(v1.2)",
+        source="국립국어원 문어 말뭉치",
         train_patterns=(
             "data/korean_raw/NIKL_WRITTEN(v1.2)/*.json",
         ),
@@ -523,6 +524,7 @@ def make_row(
     token_count = compute_token_count(content=content, messages=messages)
     return {
         "source": source,
+        "data_usage": infer_data_usage(messages),
         "split": split,
         "content": content,
         "messages": messages,
