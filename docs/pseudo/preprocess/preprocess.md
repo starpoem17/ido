@@ -7,7 +7,7 @@
 
 1. `parquet_generation.md`
 2. `exact_dedup.md`
-3. `minhash_lsh_dedup.md`
+3. `near_dedup.md`
 4. [docs/pseudo/tokenizer.md](/home/hwajoong/projects/ido/docs/pseudo/tokenizer.md)
 5. `dataset_lance_upload.md`
 6. `final_lancedb_append.md`
@@ -57,8 +57,8 @@
 
 ### 3. minhash + LSH dedup
 - exact dedup 결과를 읽는다.
-- 한국어 문자 단위 5-gram shingle을 만든다.
-- minhash + LSH로 후보를 찾고 Jaccard similarity로 확정한다.
+- datatrove의 kiwi 기반 한국어 형태소 n-gram shingle을 만든다.
+- datatrove 흐름에 맞춰 signature, bucket, cluster/filter 단계를 구성하되 최종 판정은 Jaccard similarity로 확정한다.
 - 대표 row를 남기고 삭제된 row를 JSONL과 summary JSON으로 남긴다.
 
 ### 4. tokenizer 생성
@@ -78,9 +78,9 @@
 
 ## 디렉터리 계약
 - normalized parquet: `data/korean_processed/_staging/parquet/`
-- exact dedup 결과: `data/korean_processed/_staging/exact_dedup/`
-- minhash dedup 결과: `data/korean_processed/_staging/minhash_dedup/`
-- dedup 로그: `data/korean_processed/_staging/logs/`
+- exact dedup 결과: `data/korean_processed/exact_dedup/`
+- near dedup 결과: `data/korean_processed/near_dedup/`
+- dedup 로그: 각 단계 output root의 `_logs/`
 - dataset별 Lance: `data/korean_processed/lance_by_dataset/`
 - 최종 lancedb: `data/korean_processed/final_lancedb/`
 

@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12.12"
 dependencies = [
     "accelerate>=1.12.0",
+    "datatrove[io,processing,multilingual]",
     "datasets>=4.5.0",
     "duckdb>=1.4.4",
     "huggingface-hub>=1.4.1",
