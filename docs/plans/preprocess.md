@@ -108,7 +108,7 @@
 1. `data/korean_raw`의 각 데이터셋을 읽는다.
 2. 데이터셋별 규칙에 따라 통일된 6-feature 스키마의 중간 parquet row로 변환한다.
 3. `content` 기준 exact dedup으로 완전히 동일한 row를 제거한다.
-4. 전체 데이터 소스를 섞은 뒤, `content` 기준 datatrove의 kiwi 기반 한국어 형태소 n-gram shingle로 minhash + LSH 후보를 만들고 Jaccard similarity 임계값 기반으로 near-duplicate를 제거한다.
+4. 전체 데이터 소스를 섞은 뒤, `content`에서 공백 문자를 제거한 문자열 기준 한국어 문자 단위 7-gram shingle로 minhash + LSH 후보를 만들고 Jaccard similarity 임계값 기반으로 near-duplicate를 제거한다.
 5. dedup 결과를 사용해 토크나이저를 학습한다.
 6. 학습된 토크나이저로 모든 row의 `token_count`를 `content` 기준으로 채운다.
 7. 데이터셋별 Lance shard를 만들고 하나의 Lance 데이터셋에 append한다.
@@ -122,12 +122,14 @@
 ### 2.3 dedup 단계
 - exact dedup은 `content`가 완전히 동일한 row를 제거한다.
 - exact dedup과 minhash + LSH dedup은 데이터 소스를 섞은 전체 row 집합 기준으로 수행한다.
-- minhash + LSH dedup은 `content` 문자열을 datatrove의 kiwi 기반 한국어 형태소 5-gram shingle 집합으로 바꾼 뒤 수행한다.
-- minhash + LSH는 datatrove 구현 흐름에 따라 near-duplicate 후보를 찾는 단계로만 사용하고, 후보 row들에 대해서는 shingle 집합 기준 Jaccard similarity를 다시 계산한다.
+- minhash + LSH dedup은 각 row의 `content`에서 Python `str.isspace()`가 참인 문자를 제거한 정규화 문자열을 만든 뒤 수행한다.
+- 정규화 문자열은 한국어 문자 단위 7-gram shingle 집합으로 바꾼다.
+- 정규화 문자열 길이가 7 미만이면 정규화 문자열 전체 1개를 shingle 1개로 본다.
+- minhash + LSH는 프로젝트 내부 구현으로 near-duplicate 후보를 찾는 단계로만 사용하고, 후보 row들에 대해서는 동일한 정규화 문자열의 shingle 집합 기준 Jaccard similarity를 다시 계산한다.
 - Jaccard similarity 임계값은 코드 맨 앞에서 수정하기 쉬운 하이퍼파라미터로 둔다.
 - Jaccard similarity가 임계값을 넘는 row들은 같은 중복 클러스터로 판단하고 대표 row 하나만 남긴다.
 - 대표 row 우선순위는 `REASONING > SFT > PT`로 둔다.
-- `data_usage`가 같으면 `content`의 Python 기준 `len`이 더 긴 row를 대표로 남긴다.
+- `data_usage`가 같으면 원본 `content`의 Python 기준 `len`이 더 긴 row를 대표로 남긴다.
 - 그마저도 같으면 안정적인 row locator 순서가 앞선 row를 대표로 남긴다.
 - dedup 이후 남은 row만 토크나이저 학습과 최종 Lance 적재에 사용한다.
 
@@ -430,6 +432,8 @@
 - split은 최종적으로 모든 데이터셋에서 99:1 규칙을 만족해야 한다.
 - `020`, `021`, `030`과 같이 과거 계획과 현재 personal 규칙이 달라진 항목은 최신 규칙으로 덮어써야 한다.
 - `국립국어원 구어/문어/신문`, `045`, `046`, `141`, `gsm8k`, `novel24`는 기존 plan의 구 split 규칙을 더 이상 사용하지 않아야 한다.
+- near dedup 설명에는 `content` 공백 제거 후 문자 7-gram을 사용한다는 기준이 반영되어야 한다.
+- near dedup 관련 서술에 `datatrove`, `kiwi`, `형태소 5-gram` 표현이 남아 있지 않아야 한다.
 
 ### 4.3 통계 검증
 - source별 row 수와 token 수를 남긴다.
