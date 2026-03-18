@@ -69,6 +69,9 @@ REASON_CODE_BY_LABEL = {
     "stable_locator_tiebreak": 3,
 }
 REASON_LABEL_BY_CODE = {value: key for key, value in REASON_CODE_BY_LABEL.items()}
+# The near-dedup hash pipeline intentionally uses uint64 wraparound arithmetic.
+# These mixes are fast, deterministic non-cryptographic hashes, so modulo 2^64
+# overflow is part of the design rather than an error condition.
 EMPTY_TEXT_SENTINEL = np.uint64(0x9E3779B97F4A7C15)
 SHINGLE_HASH_BASE = np.uint64(0x100000001B3)
 SHINGLE_HASH_OFFSET = np.uint64(0x9E3779B97F4A7C15)
@@ -705,7 +708,7 @@ def _build_bucket_table(
     keys = np.zeros((signatures.shape[0], num_bands), dtype=np.uint64)
     salts = np.resize(BUCKET_SALTS, rows_per_band)
     for offset in range(rows_per_band):
-        keys = (keys * BUCKET_HASH_BASE) ^ (banded[:, :, offset] + salts[offset])
+        keys = _combine_u64_vector(keys, banded[:, :, offset], BUCKET_HASH_BASE, salts[offset])
     flat_row_ids = np.repeat(row_ids, num_bands)
     flat_band_idx = np.tile(np.arange(num_bands, dtype=np.int16), len(row_ids))
     flat_keys = keys.reshape(-1)
@@ -753,7 +756,7 @@ def _compute_minhash_signature(
     block_size = max(1, 4096 // max(1, num_permutations))
     for start in range(0, shingle_hashes.size, block_size):
         block = shingle_hashes[start : start + block_size]
-        mixed = ((block[:, None] ^ perm_b[None, :]) * perm_a[None, :]).astype(np.uint64)
+        mixed = _apply_u64_permutations(block, perm_a, perm_b)
         signature = np.minimum(signature, mixed.min(axis=0))
     return signature
 
@@ -792,7 +795,7 @@ def _mix_short_sequence(codepoints: np.ndarray[Any, np.dtype[np.uint32]]) -> np.
     for index, codepoint in enumerate(codepoints.astype(np.uint64)):
         multiplier = WINDOW_MULTIPLIERS[index % len(WINDOW_MULTIPLIERS)]
         salt = WINDOW_SALTS[index % len(WINDOW_SALTS)]
-        value = (value * SHINGLE_HASH_BASE) ^ (codepoint * multiplier + salt)
+        value = _mix_u64_scalar(value, codepoint, multiplier, salt)
     return np.asarray([value], dtype=np.uint64)
 
 
@@ -801,10 +804,56 @@ def _mix_codepoint_windows(
 ) -> np.ndarray[Any, np.dtype[np.uint64]]:
     hashes = np.full(windows.shape[0], SHINGLE_HASH_OFFSET, dtype=np.uint64)
     for index in range(windows.shape[1]):
-        hashes = (hashes * SHINGLE_HASH_BASE) ^ (
-            windows[:, index].astype(np.uint64) * WINDOW_MULTIPLIERS[index] + WINDOW_SALTS[index]
+        hashes = _mix_u64_vector(
+            hashes,
+            windows[:, index].astype(np.uint64),
+            WINDOW_MULTIPLIERS[index],
+            WINDOW_SALTS[index],
         )
     return hashes
+
+
+def _mix_u64_scalar(
+    state: np.uint64,
+    value: np.uint64,
+    multiplier: np.uint64,
+    salt: np.uint64,
+) -> np.uint64:
+    # Explicitly use uint64 modulo arithmetic. Overflow is expected here.
+    with np.errstate(over="ignore"):
+        return (state * SHINGLE_HASH_BASE) ^ (value * multiplier + salt)
+
+
+def _mix_u64_vector(
+    state: np.ndarray[Any, np.dtype[np.uint64]],
+    value: np.ndarray[Any, np.dtype[np.uint64]],
+    multiplier: np.uint64,
+    salt: np.uint64,
+) -> np.ndarray[Any, np.dtype[np.uint64]]:
+    # Explicitly use uint64 modulo arithmetic. Overflow is expected here.
+    with np.errstate(over="ignore"):
+        return (state * SHINGLE_HASH_BASE) ^ (value * multiplier + salt)
+
+
+def _combine_u64_vector(
+    state: np.ndarray[Any, np.dtype[np.uint64]],
+    value: np.ndarray[Any, np.dtype[np.uint64]],
+    base: np.uint64,
+    salt: np.uint64,
+) -> np.ndarray[Any, np.dtype[np.uint64]]:
+    # Bucket and rebucket keys intentionally use uint64 modulo arithmetic.
+    with np.errstate(over="ignore"):
+        return (state * base) ^ (value + salt)
+
+
+def _apply_u64_permutations(
+    block: np.ndarray[Any, np.dtype[np.uint64]],
+    perm_a: np.ndarray[Any, np.dtype[np.uint64]],
+    perm_b: np.ndarray[Any, np.dtype[np.uint64]],
+) -> np.ndarray[Any, np.dtype[np.uint64]]:
+    # Minhash permutations also operate in uint64 modulo arithmetic by design.
+    with np.errstate(over="ignore"):
+        return ((block[:, None] ^ perm_b[None, :]) * perm_a[None, :]).astype(np.uint64)
 
 
 def _build_permutation_arrays(
@@ -1097,8 +1146,11 @@ def _compute_rebucket_keys(
     signature_slice = signature_mmap[row_ids][:, indices]
     keys = np.zeros(signature_slice.shape[0], dtype=np.uint64)
     for offset in range(signature_slice.shape[1]):
-        keys = (keys * BUCKET_HASH_BASE) ^ (
-            signature_slice[:, offset] + BUCKET_SALTS[offset % len(BUCKET_SALTS)]
+        keys = _combine_u64_vector(
+            keys,
+            signature_slice[:, offset],
+            BUCKET_HASH_BASE,
+            BUCKET_SALTS[offset % len(BUCKET_SALTS)],
         )
     return keys % np.uint64(config.giant_bucket_rebucket_fanout)
 

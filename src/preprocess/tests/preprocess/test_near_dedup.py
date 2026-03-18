@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
+import numpy as np
 import pyarrow.parquet as pq
 
 from src.preprocess import common
@@ -55,6 +57,16 @@ def _build_config(input_root: Path, output_root: Path, **overrides: object) -> n
     return near_dedup.NearDedupConfig(**payload)
 
 
+def _manual_wraparound_mix_short_sequence(codepoints: list[int]) -> int:
+    mask = (1 << 64) - 1
+    value = int(near_dedup.EMPTY_TEXT_SENTINEL)
+    for index, codepoint in enumerate(codepoints):
+        multiplier = int(near_dedup.WINDOW_MULTIPLIERS[index % len(near_dedup.WINDOW_MULTIPLIERS)])
+        salt = int(near_dedup.WINDOW_SALTS[index % len(near_dedup.WINDOW_SALTS)])
+        value = ((value * int(near_dedup.SHINGLE_HASH_BASE)) ^ ((codepoint * multiplier + salt) & mask)) & mask
+    return value
+
+
 class NearDedupTests(unittest.TestCase):
     def setUp(self) -> None:
         self._old_common_tqdm = common.ENABLE_TQDM
@@ -72,6 +84,21 @@ class NearDedupTests(unittest.TestCase):
 
         self.assertEqual(shingles, {"가나", "나다"})
         self.assertEqual(short_shingles, {"가나"})
+
+    def test_mix_short_sequence_uses_intentional_uint64_wraparound_without_warning(self) -> None:
+        codepoints = near_dedup._text_to_codepoints("가나")
+        expected = _manual_wraparound_mix_short_sequence(codepoints.tolist())
+
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            mixed = near_dedup._mix_short_sequence(codepoints)
+
+        self.assertEqual(mixed.dtype, np.uint64)
+        self.assertEqual(int(mixed[0]), expected)
+        overflow_warnings = [
+            warning for warning in captured if "overflow encountered" in str(warning.message)
+        ]
+        self.assertEqual(overflow_warnings, [])
 
     def test_validate_config_rejects_mismatched_permutation_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
