@@ -8,7 +8,7 @@
 1. `parquet_generation.md`
 2. `exact_dedup.md`
 3. `near_dedup.md`
-4. [docs/pseudo/tokenizer.md](/home/hwajoong/projects/ido/docs/pseudo/tokenizer.md)
+4. [docs/pseudo/tokenizer/build_tokenizer.md](/home/hwajoong/projects/ido/docs/pseudo/tokenizer/build_tokenizer.md)
 5. `dataset_lance_upload.md`
 6. `final_lancedb_append.md`
 
@@ -62,9 +62,10 @@
 - 대표 row를 남기고 삭제된 row를 JSONL과 summary JSON으로 남긴다.
 
 ### 4. tokenizer 생성
-- dedup 완료 staging parquet를 읽는다.
+- near dedup 완료 parquet를 읽는다.
 - `content`만 추출해 BBPE 토크나이저를 생성한다.
-- 상세 절차는 [docs/pseudo/tokenizer.md](/home/hwajoong/projects/ido/docs/pseudo/tokenizer.md)를 따른다.
+- 상세 절차는 [docs/pseudo/tokenizer/build_tokenizer.md](/home/hwajoong/projects/ido/docs/pseudo/tokenizer/build_tokenizer.md)를 따른다.
+- tokenizer benchmark는 별도 후속 단계로 [docs/pseudo/tokenizer/bench_tokenizer.md](/home/hwajoong/projects/ido/docs/pseudo/tokenizer/bench_tokenizer.md)를 따른다.
 
 ### 5. dataset별 Lance 업로드
 - minhash dedup 완료 parquet를 dataset별로 나눈다.

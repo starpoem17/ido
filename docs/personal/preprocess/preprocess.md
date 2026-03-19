@@ -91,6 +91,6 @@ exact, minhash + lsh dedup은 전체 데이터 소스를 섞어서 진행한다.
 - data/korean_raw 안의 데이터를 통일된 형식의 parquet 파일로 변환한다. 구체적인 변환 전략은 docs/personal/preprocess 안의 문서들을 참조한다.
 - exact dedup으로 완전히 동일한 content 필드를 갖는 행을 제거한다.
 - minhash + lsh 로 중복 후보를 제거한다.
-- 중복이 제거된 데이터를 활용해 토크나이저를 빌드한다. 토크나이저의 사전 크기는 48k를 디폴트로 한다
+- 중복이 제거된 데이터를 활용해 토크나이저를 빌드한다.
 - 토크나이저 빌드 이후 비어있는 token_count 필드를 채워넣는다. token_count 필드 안의 값은 content 필드의 텍스트 토큰 길이를 기준으로 한다.
 - 이후 각 데이터 항목 별로 lance 데이터셋을 구축(이 경우 샤딩을 진행하는데 샤드 하나의 크기는 1gb로 한다.)한 뒤 append하여 LLM 학습에 사용할 최종 lancedb를 완성한다. 
