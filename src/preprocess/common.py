@@ -68,7 +68,7 @@ SPECIAL_TOKEN_BY_ROLE = {
     "assistant": "<|assistant|>",
 }
 
-_TOKENIZER: Tokenizer | None = None #lazy loading 방식 때문에 아직 안불러왔다고 표기하는 것
+_TOKENIZER_BY_PATH: dict[str, Tokenizer] = {}
 
 
 @dataclass(frozen=True) #객체 만든 후 값 못 바꾸게 
@@ -115,14 +115,17 @@ def progress_bar(*, total: int | None, desc: str) -> tqdm[Any]:
     )
 
 
-def get_tokenizer() -> Tokenizer:
-    global _TOKENIZER
-    if _TOKENIZER is None:
-        from tokenizers import Tokenizer as TokenizerImpl
+def get_tokenizer(tokenizer_json_path: Path | None = None) -> Tokenizer:
+    from tokenizers import Tokenizer as TokenizerImpl
 
-        log(f"Loading tokenizer from {TOKENIZER_JSON_PATH}")
-        _TOKENIZER = TokenizerImpl.from_file(str(TOKENIZER_JSON_PATH))
-    return _TOKENIZER
+    resolved_path = Path(tokenizer_json_path or TOKENIZER_JSON_PATH)
+    cache_key = str(resolved_path)
+    tokenizer = _TOKENIZER_BY_PATH.get(cache_key)
+    if tokenizer is None:
+        log(f"Loading tokenizer from {resolved_path}")
+        tokenizer = TokenizerImpl.from_file(str(resolved_path))
+        _TOKENIZER_BY_PATH[cache_key] = tokenizer
+    return tokenizer
 
 
 def strip_text(value: Any) -> str | None:
@@ -159,14 +162,16 @@ def compute_token_count(
     *,
     content: str | None,
     messages: Sequence[dict[str, str]] | None,
+    tokenizer_json_path: Path | None = None,
+    tokenizer: Tokenizer | None = None,
 ) -> int:
-    if messages:
-        serialized = serialize_messages(messages)
-    elif content:
-        serialized = content
-    else:
-        raise ValueError("content/messages cannot both be empty")
-    token_count = len(get_tokenizer().encode(serialized).ids)
+    del messages
+    if not isinstance(content, str):
+        raise ValueError("content must be a non-null string")
+    if not content.strip():
+        raise ValueError("content must be non-empty after strip")
+    tokenizer_impl = tokenizer or get_tokenizer(tokenizer_json_path)
+    token_count = len(tokenizer_impl.encode(content).ids)
     if token_count < 1:
         raise ValueError("token_count must be >= 1")
     return token_count

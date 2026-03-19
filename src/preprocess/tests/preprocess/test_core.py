@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,6 +10,10 @@ from src.preprocess.dataset_specs import assign_split_records
 
 
 class PreprocessCoreTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        common._TOKENIZER_BY_PATH.clear()
+        common.TOKENIZER_JSON_PATH = Path("data/tokenizers/korean_bbpe_v1/tokenizer.json")
+
     def test_serialize_messages(self) -> None:
         serialized = common.serialize_messages(
             [
@@ -75,6 +80,55 @@ class PreprocessCoreTests(unittest.TestCase):
         self.assertSetEqual(first_train, second_train)
         self.assertSetEqual(first_val, second_val)
         self.assertTrue(first_train.isdisjoint(first_val))
+
+    def test_compute_token_count_uses_content_only_even_when_messages_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tokenizer_path = Path(tmp_dir) / "tokenizer.json"
+            self._write_test_tokenizer(tokenizer_path)
+
+            token_count = common.compute_token_count(
+                content="안녕 세상",
+                messages=[{"role": "assistant", "content": "이 값은 무시"}],
+                tokenizer_json_path=tokenizer_path,
+            )
+
+        self.assertEqual(token_count, 2)
+
+    def test_validate_row_uses_content_based_token_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tokenizer_path = Path(tmp_dir) / "tokenizer.json"
+            self._write_test_tokenizer(tokenizer_path)
+            common.TOKENIZER_JSON_PATH = tokenizer_path
+
+            row = {
+                "source": "src",
+                "data_usage": "SFT",
+                "split": "train",
+                "content": "안녕 세상",
+                "messages": [{"role": "assistant", "content": "다른 문자열"}],
+                "token_count": 2,
+            }
+            common.validate_row(row)
+
+    def _write_test_tokenizer(self, path: Path) -> None:
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from tokenizers.pre_tokenizers import Whitespace
+
+        tokenizer = Tokenizer(
+            WordLevel(
+                vocab={
+                    "[UNK]": 0,
+                    "안녕": 1,
+                    "세상": 2,
+                    "질문": 3,
+                    "답변": 4,
+                },
+                unk_token="[UNK]",
+            )
+        )
+        tokenizer.pre_tokenizer = Whitespace()
+        tokenizer.save(str(path))
 
 
 if __name__ == "__main__":

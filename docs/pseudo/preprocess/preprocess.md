@@ -9,8 +9,9 @@
 2. `exact_dedup.md`
 3. `near_dedup.md`
 4. [docs/pseudo/tokenizer/build_tokenizer.md](/home/hwajoong/projects/ido/docs/pseudo/tokenizer/build_tokenizer.md)
-5. `dataset_lance_upload.md`
-6. `final_lancedb_append.md`
+5. `add_token_count.md`
+6. `dataset_lance_upload.md`
+7. `final_lancedb_append.md`
 
 ## 공통 계약
 
@@ -57,8 +58,9 @@
 
 ### 3. minhash + LSH dedup
 - exact dedup 결과를 읽는다.
-- datatrove의 kiwi 기반 한국어 형태소 n-gram shingle을 만든다.
-- datatrove 흐름에 맞춰 signature, bucket, cluster/filter 단계를 구성하되 최종 판정은 Jaccard similarity로 확정한다.
+- `content`에서 Python `str.isspace()`가 참인 문자를 제거한 정규화 문자열을 만든다.
+- 정규화 문자열에서 한국어 문자 단위 7-gram shingle 집합을 만들고 직접 구현 minhash + LSH로 후보를 찾는다.
+- 최종 판정은 동일한 정규화 문자열의 shingle 집합 기준 Jaccard similarity로 확정한다.
 - 대표 row를 남기고 삭제된 row를 JSONL과 summary JSON으로 남긴다.
 
 ### 4. tokenizer 생성
@@ -67,12 +69,17 @@
 - 상세 절차는 [docs/pseudo/tokenizer/build_tokenizer.md](/home/hwajoong/projects/ido/docs/pseudo/tokenizer/build_tokenizer.md)를 따른다.
 - tokenizer benchmark는 별도 후속 단계로 [docs/pseudo/tokenizer/bench_tokenizer.md](/home/hwajoong/projects/ido/docs/pseudo/tokenizer/bench_tokenizer.md)를 따른다.
 
-### 5. dataset별 Lance 업로드
-- minhash dedup 완료 parquet를 dataset별로 나눈다.
-- 생성된 tokenizer로 `content` 기준 `token_count`를 채운다.
+### 5. token_count 채우기
+- near dedup 완료 parquet를 읽는다.
+- 사용자 지정 `TOKENIZER_JSON_PATH`로 tokenizer를 로드한다.
+- `content` 기준 `token_count`를 계산해 `data/korean_processed/token_count_added/part-*.parquet`를 만든다.
+- 입력 shard의 파일 이름, row 수, row 순서는 그대로 유지한다.
+
+### 6. dataset별 Lance 업로드
+- `token_count_added` parquet를 dataset별로 나눈다.
 - dataset별 Lance dataset을 1GB shard 기준으로 생성한다.
 
-### 6. final lancedb append
+### 7. final lancedb append
 - dataset별 Lance dataset 디렉터리를 읽는다.
 - 하나의 최종 LLM 학습용 LanceDB로 append한다.
 - manifest, indices, source/token 통계를 생성한다.
@@ -81,6 +88,7 @@
 - normalized parquet: `data/korean_processed/_staging/parquet/`
 - exact dedup 결과: `data/korean_processed/exact_dedup/`
 - near dedup 결과: `data/korean_processed/near_dedup/`
+- token_count 추가 결과: `data/korean_processed/token_count_added/`
 - dedup 로그: 각 단계 output root의 `_logs/`
 - dataset별 Lance: `data/korean_processed/lance_by_dataset/`
 - 최종 lancedb: `data/korean_processed/final_lancedb/`

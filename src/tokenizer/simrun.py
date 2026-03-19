@@ -8,7 +8,7 @@ from typing import TextIO
 from src.tokenizer import common
 
 
-TOKENIZER_JSON_PATH = Path("data/tokenizers/korean_bbpe_v1/tokenizer.json")
+TOKENIZER_JSON_PATH = Path("data/tokenizers/korean_bbpe_v2/tokenizer.json")
 MAX_DISPLAY_TOKENS = 64
 SHOW_TOKEN_BREAKDOWN = True
 EXIT_COMMANDS = ("exit", "quit", ":q")
