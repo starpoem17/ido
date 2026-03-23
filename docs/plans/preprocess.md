@@ -3,6 +3,7 @@
 ## 0. 목적
 이 문서는 `data/korean_raw` 원천 데이터를 하나의 통합 전처리 파이프라인으로 정리하기 위한 상위 계획이다.
 기준 문서는 [docs/personal/preprocess/preprocess.md](/home/hwajoong/projects/ido/docs/personal/preprocess/preprocess.md)이며, 세부 데이터셋 규칙은 `docs/personal/preprocess/*.md`를 따른다.
+Lance 적재 직전 변환과 shard/append 정책은 [docs/plans/lance.md](/Users/nojonghyeon/Documents/GitHub/ido/docs/plans/lance.md)를 따른다.
 
 핵심 원칙:
 1. `docs/personal/preprocess/preprocess.md`를 최상위 기준으로 본다.
@@ -48,8 +49,8 @@
 ### 1.3 content / messages / token_count 규칙
 - `content`는 PT 입력으로 쓰는 문자열이다.
 - `messages`는 SFT 또는 REASONING 입력으로 쓰는 대화 배열이다.
-- `token_count`는 항상 `content` 필드 기준 토큰 길이로 계산한다.
-- `messages`가 존재하더라도 `token_count`는 직렬화된 `messages` 길이가 아니라 `content` 길이로 저장한다.
+- parquet canonical row의 `token_count`는 `content` 기준 토큰 길이로 계산한다.
+- Lance 최종 row의 `token_count`는 [docs/plans/lance.md](/Users/nojonghyeon/Documents/GitHub/ido/docs/plans/lance.md) 규칙을 따른다.
 - 중간 parquet 단계에서는 `token_count`가 비어 있을 수 있으나, 최종 Lance 적재 전에는 모든 row를 채운다.
 
 ### 1.4 split 규칙
@@ -110,9 +111,9 @@
 3. `content` 기준 exact dedup으로 완전히 동일한 row를 제거한다.
 4. 전체 데이터 소스를 섞은 뒤, `content`에서 공백 문자를 제거한 문자열 기준 한국어 문자 단위 7-gram shingle로 minhash + LSH 후보를 만들고 Jaccard similarity 임계값 기반으로 near-duplicate를 제거한다.
 5. dedup 결과를 사용해 토크나이저를 학습한다.
-6. 학습된 토크나이저로 `data/korean_processed/near_dedup/part-*.parquet`의 `token_count`를 `content` 기준으로 채워 `data/korean_processed/token_count_added/part-*.parquet`를 만든다.
-7. `token_count_added` 결과를 사용해 데이터셋별 Lance shard를 만들고 하나의 Lance 데이터셋에 append한다.
-8. append 완료 후 metadata, manifests, indices, token 통계를 생성한다.
+6. 학습된 토크나이저를 기준으로 `data/korean_processed/near_dedup/part-*.parquet`를 직접 읽어 Lance 적재용 row를 만든다.
+7. 이 Lance 적재 단계에서 `messages` 직렬화, row 분할, REASONING 파생, 최종 `token_count` 재계산을 수행한다.
+8. source별 Lance shard를 만들고 하나의 Lance 데이터셋에 append한 뒤 metadata, manifests, indices, token 통계를 생성한다.
 
 ### 2.2 중간 parquet 단계
 - 모든 데이터셋은 먼저 통일 스키마의 parquet로 정규화한다.
@@ -139,20 +140,22 @@
 - 토크나이저는 이후 `token_count` 계산과 학습 입력 구성의 기준이 된다.
 
 ### 2.5 token_count 채우기
-- 토크나이저 빌드 후, `data/korean_processed/near_dedup/part-*.parquet`를 읽어 `data/korean_processed/token_count_added/part-*.parquet`로 새로 저장한다.
-- `token_count`는 항상 `content` 기준 길이이다.
-- 토크나이저 경로는 코드 상단의 사용자 지정 `TOKENIZER_JSON_PATH` 단일 파일 경로로 받는다.
-- 입력 shard와 출력 shard는 `part-*.parquet` 이름, row 수, row 순서를 그대로 유지한다.
-- 이 단계는 재샤딩, dedup, split 재계산을 하지 않고 `token_count`만 채운다.
-- `content is null`, 빈 문자열, 계산 결과가 1 미만인 row를 만나면 즉시 실패한다.
-- 실행 결과 manifest는 `data/korean_processed/token_count_added/_meta/add_token_count_manifest.json`에 남긴다.
+- 기존 `add_token_count.py`는 `content` 기준 `token_count`를 일괄 덮어쓰는 보조 도구로 유지한다.
+- 최종 Lance 적재에서는 별도 `build_lance.py` 실행 흐름을 사용한다.
+- `build_lance.py`는 `data/korean_processed/near_dedup/part-*.parquet`를 직접 입력으로 받는다.
+- Lance 적재용 최종 `token_count`는 PT는 `content` 기준, SFT/REASONING은 직렬화된 `messages` 기준으로 다시 계산한다.
 - 최종 Lance 적재 시 `token_count`는 null을 허용하지 않는다.
 
 ### 2.6 Lance 적재 및 샤딩
-- 각 데이터셋은 `data/korean_processed/token_count_added/part-*.parquet`를 입력으로 읽어 Lance shard로 구성한 뒤 append한다.
+- `build_lance.py`는 `near_dedup` parquet를 읽어 Lance 적재 직전 규칙을 수행한다.
+- SFT는 `messages`를 `<|bos|>...<|eot_id|>...<|eos|>` 문자열로 직렬화하고, `1024` 토큰 초과 시 user-assistant pair 기준으로 균등 분할한다.
+- PT는 `content` 기준 `1024` 토큰 초과 시 `960` 기준 목표 chunk 수를 잡고 온점 기준으로 분할한다.
+- REASONING은 Lance 적재 직전에 `PT` 파생 row와 `REASONING` 파생 row로 분리한다.
+- append 단위는 `source`별로 고정한다.
 - 샤드 하나의 목표 크기는 `1GB`다.
 - 행 중간 분할은 허용하지 않는다.
-- 모든 데이터셋은 같은 스키마로 append 가능해야 한다.
+- Lance 최종 스키마의 `messages`는 list가 아니라 serialized string이다.
+- 모든 데이터셋은 같은 Lance 최종 스키마로 append 가능해야 한다.
 
 ### 2.7 manifests / indices
 - 중간 parquet 생성 시점의 manifest를 남긴다.

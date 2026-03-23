@@ -31,12 +31,12 @@ LOG_SAMPLE_TEXT_MAX_CHARS = 160
 
 MESSAGE_STRUCT = pa.struct(
     [
-        pa.field("role", pa.string(), nullable=False),
-        pa.field("content", pa.string(), nullable=False),
+        pa.field("role", pa.string(), nullable=True),
+        pa.field("content", pa.string(), nullable=True),
     ]
 )
 
-FINAL_SCHEMA = pa.schema(
+CANONICAL_FINAL_SCHEMA = pa.schema(
     [
         pa.field("source", pa.string(), nullable=False),
         pa.field("data_usage", pa.string(), nullable=False),
@@ -58,7 +58,19 @@ STAGING_SCHEMA = pa.schema(
     ]
 )
 
-CANONICAL_SCHEMA = FINAL_SCHEMA
+LANCE_FINAL_SCHEMA = pa.schema(
+    [
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("data_usage", pa.string(), nullable=False),
+        pa.field("split", pa.string(), nullable=False),
+        pa.field("content", pa.string(), nullable=True),
+        pa.field("messages", pa.string(), nullable=True),
+        pa.field("token_count", pa.int32(), nullable=False),
+    ]
+)
+
+FINAL_SCHEMA = CANONICAL_FINAL_SCHEMA
+CANONICAL_SCHEMA = CANONICAL_FINAL_SCHEMA
 
 ALLOWED_SPLITS = {"train", "val"}
 ALLOWED_DATA_USAGES = {"PT", "SFT", "REASONING"}
@@ -158,6 +170,49 @@ def serialize_messages(messages: Sequence[dict[str, str]] | Sequence[Message]) -
     return "".join(parts)
 
 
+def serialize_messages_for_lance(
+    messages: Sequence[dict[str, str]] | Sequence[Message],
+) -> str:
+    return "<|bos|>" + serialize_messages_with_eot(messages) + "<|eos|>"
+
+
+def serialize_messages_with_eot(
+    messages: Sequence[dict[str, str]] | Sequence[Message],
+) -> str:
+    parts: list[str] = []
+    for raw_message in messages:
+        if isinstance(raw_message, Message):
+            role = raw_message.role
+            content = raw_message.content
+        else:
+            role = raw_message["role"]
+            content = raw_message["content"]
+        token = SPECIAL_TOKEN_BY_ROLE.get(role)
+        if token is None:
+            raise ValueError(f"unsupported role for serialization: {role}")
+        parts.append(token)
+        parts.append(content)
+        parts.append("<|eot_id|>")
+    return "".join(parts)
+
+
+def compute_token_count_from_text(
+    text: str,
+    *,
+    tokenizer_json_path: Path | None = None,
+    tokenizer: Tokenizer | None = None,
+) -> int:
+    if not isinstance(text, str):
+        raise ValueError("text must be a non-null string")
+    if not text.strip():
+        raise ValueError("text must be non-empty after strip")
+    tokenizer_impl = tokenizer or get_tokenizer(tokenizer_json_path)
+    token_count = len(tokenizer_impl.encode(text).ids)
+    if token_count < 1:
+        raise ValueError("token_count must be >= 1")
+    return token_count
+
+
 def compute_token_count(
     *,
     content: str | None,
@@ -168,13 +223,11 @@ def compute_token_count(
     del messages
     if not isinstance(content, str):
         raise ValueError("content must be a non-null string")
-    if not content.strip():
-        raise ValueError("content must be non-empty after strip")
-    tokenizer_impl = tokenizer or get_tokenizer(tokenizer_json_path)
-    token_count = len(tokenizer_impl.encode(content).ids)
-    if token_count < 1:
-        raise ValueError("token_count must be >= 1")
-    return token_count
+    return compute_token_count_from_text(
+        content,
+        tokenizer_json_path=tokenizer_json_path,
+        tokenizer=tokenizer,
+    )
 
 
 def build_content_from_messages(messages: Sequence[dict[str, str]]) -> str:
@@ -212,10 +265,14 @@ def validate_row(row: dict[str, Any]) -> None:
 
 
 def rows_to_table(rows: Sequence[dict[str, Any]]) -> pa.Table:
-    schema = FINAL_SCHEMA
+    schema = CANONICAL_FINAL_SCHEMA
     if any(row.get("token_count") is None for row in rows):
         schema = STAGING_SCHEMA
     return pa.Table.from_pylist(list(rows), schema=schema)
+
+
+def lance_rows_to_table(rows: Sequence[dict[str, Any]]) -> pa.Table:
+    return pa.Table.from_pylist(list(rows), schema=LANCE_FINAL_SCHEMA)
 
 
 def ensure_parent_dir(path: Path) -> None:

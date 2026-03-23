@@ -10,8 +10,7 @@
 3. `near_dedup.md`
 4. [docs/pseudo/tokenizer/build_tokenizer.md](/home/hwajoong/projects/ido/docs/pseudo/tokenizer/build_tokenizer.md)
 5. `add_token_count.md`
-6. `dataset_lance_upload.md`
-7. `final_lancedb_append.md`
+6. `build_lance.md`
 
 ## 공통 계약
 
@@ -29,7 +28,8 @@
 - `content`와 `messages` 중 최소 하나는 반드시 채운다.
 - `data_usage`는 `PT`, `SFT`, `REASONING`만 허용한다.
 - `split`은 `train`, `val`만 허용한다.
-- `token_count`는 최종적으로 항상 `content` 기준으로 채운다.
+- parquet canonical row의 `token_count`는 `content` 기준으로 채울 수 있다.
+- final Lance row의 `token_count`는 PT는 `content`, SFT/REASONING은 serialized `messages` 기준으로 다시 계산한다.
 
 ### split helper
 - `docs/plans/preprocess.md`의 99:1 재구성 규칙을 실제 코드로 옮길 때는 결정적 해시 기반 할당 helper를 사용한다.
@@ -75,14 +75,12 @@
 - `content` 기준 `token_count`를 계산해 `data/korean_processed/token_count_added/part-*.parquet`를 만든다.
 - 입력 shard의 파일 이름, row 수, row 순서는 그대로 유지한다.
 
-### 6. dataset별 Lance 업로드
-- `token_count_added` parquet를 dataset별로 나눈다.
-- dataset별 Lance dataset을 1GB shard 기준으로 생성한다.
-
-### 7. final lancedb append
-- dataset별 Lance dataset 디렉터리를 읽는다.
-- 하나의 최종 LLM 학습용 LanceDB로 append한다.
-- manifest, indices, source/token 통계를 생성한다.
+### 6. Lance 적재
+- near dedup 완료 parquet를 직접 읽는다.
+- `messages` 직렬화, SFT/PT 분할, REASONING 파생, 최종 `token_count` 재계산을 수행한다.
+- source별 shard를 1GB 기준으로 생성한다.
+- source별 shard를 하나의 최종 Lance dataset으로 append한다.
+- 상세 절차는 `build_lance.md`를 따른다.
 
 ## 디렉터리 계약
 - normalized parquet: `data/korean_processed/_staging/parquet/`
@@ -90,13 +88,13 @@
 - near dedup 결과: `data/korean_processed/near_dedup/`
 - token_count 추가 결과: `data/korean_processed/token_count_added/`
 - dedup 로그: 각 단계 output root의 `_logs/`
-- dataset별 Lance: `data/korean_processed/lance_by_dataset/`
+- source별 임시 Lance shard parquet: `data/korean_processed/lance_by_source/`
 - 최종 lancedb: `data/korean_processed/final_lancedb/`
 
 ## dataset 문서 역할
 각 dataset md는 아래 두 부분만 상세하게 다룬다.
 
 1. raw -> canonical parquet row 생성 규칙
-2. minhash dedup 이후 dataset별 Lance 업로드 규칙
+2. minhash dedup 이후 common `build_lance.md`가 소비할 수 있는 row 계약
 
 exact dedup, minhash dedup, tokenizer 생성, final append는 공통 단계 문서를 따른다.

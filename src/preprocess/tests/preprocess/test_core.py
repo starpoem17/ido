@@ -4,9 +4,16 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from src.preprocess import common
 from src.preprocess.dataset_specs import assign_split_records
+
+
+class _FakeTokenizer:
+    def encode(self, text: str):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(ids=text.split())
 
 
 class PreprocessCoreTests(unittest.TestCase):
@@ -23,6 +30,19 @@ class PreprocessCoreTests(unittest.TestCase):
             ]
         )
         self.assertEqual(serialized, "<|system|>s<|user|>u<|assistant|>a")
+
+    def test_serialize_messages_for_lance(self) -> None:
+        serialized = common.serialize_messages_for_lance(
+            [
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": "u"},
+                {"role": "assistant", "content": "a"},
+            ]
+        )
+        self.assertEqual(
+            serialized,
+            "<|bos|><|system|>s<|eot_id|><|user|>u<|eot_id|><|assistant|>a<|eot_id|><|eos|>",
+        )
 
     def test_progress_bar_uses_stdout(self) -> None:
         bar = common.progress_bar(total=1, desc="test")
@@ -82,53 +102,33 @@ class PreprocessCoreTests(unittest.TestCase):
         self.assertTrue(first_train.isdisjoint(first_val))
 
     def test_compute_token_count_uses_content_only_even_when_messages_exist(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tokenizer_path = Path(tmp_dir) / "tokenizer.json"
-            self._write_test_tokenizer(tokenizer_path)
-
-            token_count = common.compute_token_count(
-                content="안녕 세상",
-                messages=[{"role": "assistant", "content": "이 값은 무시"}],
-                tokenizer_json_path=tokenizer_path,
-            )
+        token_count = common.compute_token_count(
+            content="안녕 세상",
+            messages=[{"role": "assistant", "content": "이 값은 무시"}],
+            tokenizer=_FakeTokenizer(),
+        )
 
         self.assertEqual(token_count, 2)
 
     def test_validate_row_uses_content_based_token_count(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tokenizer_path = Path(tmp_dir) / "tokenizer.json"
-            self._write_test_tokenizer(tokenizer_path)
-            common.TOKENIZER_JSON_PATH = tokenizer_path
-
-            row = {
-                "source": "src",
-                "data_usage": "SFT",
-                "split": "train",
-                "content": "안녕 세상",
-                "messages": [{"role": "assistant", "content": "다른 문자열"}],
-                "token_count": 2,
-            }
+        row = {
+            "source": "src",
+            "data_usage": "SFT",
+            "split": "train",
+            "content": "안녕 세상",
+            "messages": [{"role": "assistant", "content": "다른 문자열"}],
+            "token_count": 2,
+        }
+        with patch("src.preprocess.common.get_tokenizer", return_value=_FakeTokenizer()):
             common.validate_row(row)
 
-    def _write_test_tokenizer(self, path: Path) -> None:
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from tokenizers.pre_tokenizers import Whitespace
-
-        tokenizer = Tokenizer(
-            WordLevel(
-                vocab={
-                    "[UNK]": 0,
-                    "안녕": 1,
-                    "세상": 2,
-                    "질문": 3,
-                    "답변": 4,
-                },
-                unk_token="[UNK]",
-            )
+    def test_compute_token_count_from_text(self) -> None:
+        token_count = common.compute_token_count_from_text(
+            "질문 답변",
+            tokenizer=_FakeTokenizer(),
         )
-        tokenizer.pre_tokenizer = Whitespace()
-        tokenizer.save(str(path))
+
+        self.assertEqual(token_count, 2)
 
 
 if __name__ == "__main__":

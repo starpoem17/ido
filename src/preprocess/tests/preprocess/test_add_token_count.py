@@ -4,33 +4,17 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pyarrow.parquet as pq
 
 from src.preprocess import add_token_count, common
 
 
-def _write_test_tokenizer(path: Path) -> None:
-    from tokenizers import Tokenizer
-    from tokenizers.models import WordLevel
-    from tokenizers.pre_tokenizers import Whitespace
-
-    tokenizer = Tokenizer(
-        WordLevel(
-            vocab={
-                "[UNK]": 0,
-                "안녕": 1,
-                "세상": 2,
-                "질문": 3,
-                "답변": 4,
-                "추가": 5,
-                "문장": 6,
-            },
-            unk_token="[UNK]",
-        )
-    )
-    tokenizer.pre_tokenizer = Whitespace()
-    tokenizer.save(str(path))
+class _FakeTokenizer:
+    def encode(self, text: str):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(ids=text.split())
 
 
 def _write_input_shard(root: Path, name: str, rows: list[dict[str, object]]) -> Path:
@@ -64,7 +48,7 @@ class AddTokenCountTests(unittest.TestCase):
             input_root = tmp_root / "near_dedup"
             output_root = tmp_root / "token_count_added"
             tokenizer_path = tmp_root / "tokenizer.json"
-            _write_test_tokenizer(tokenizer_path)
+            tokenizer_path.write_text("{}", encoding="utf-8")
 
             _write_input_shard(
                 input_root,
@@ -103,16 +87,17 @@ class AddTokenCountTests(unittest.TestCase):
                 ],
             )
 
-            summary = add_token_count.run_add_token_count(
-                add_token_count.AddTokenCountConfig(
-                    input_root=input_root,
-                    output_root=output_root,
-                    tokenizer_json_path=tokenizer_path,
-                    num_workers=1,
-                    row_batch_rows=2,
-                    overwrite_output=False,
+            with patch("src.preprocess.add_token_count.common.get_tokenizer", return_value=_FakeTokenizer()):
+                summary = add_token_count.run_add_token_count(
+                    add_token_count.AddTokenCountConfig(
+                        input_root=input_root,
+                        output_root=output_root,
+                        tokenizer_json_path=tokenizer_path,
+                        num_workers=1,
+                        row_batch_rows=2,
+                        overwrite_output=False,
+                    )
                 )
-            )
 
             self.assertEqual(summary.input_shard_count, 2)
             self.assertEqual(summary.output_shard_count, 2)
@@ -149,7 +134,7 @@ class AddTokenCountTests(unittest.TestCase):
             input_root = tmp_root / "near_dedup"
             output_root = tmp_root / "token_count_added"
             tokenizer_path = tmp_root / "tokenizer.json"
-            _write_test_tokenizer(tokenizer_path)
+            tokenizer_path.write_text("{}", encoding="utf-8")
 
             _write_input_shard(
                 input_root,
@@ -167,16 +152,20 @@ class AddTokenCountTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(ValueError, "content must be a non-null string"):
-                add_token_count.run_add_token_count(
-                    add_token_count.AddTokenCountConfig(
-                        input_root=input_root,
-                        output_root=output_root,
-                        tokenizer_json_path=tokenizer_path,
-                        num_workers=1,
-                        row_batch_rows=2,
-                        overwrite_output=False,
+                with patch(
+                    "src.preprocess.add_token_count.common.get_tokenizer",
+                    return_value=_FakeTokenizer(),
+                ):
+                    add_token_count.run_add_token_count(
+                        add_token_count.AddTokenCountConfig(
+                            input_root=input_root,
+                            output_root=output_root,
+                            tokenizer_json_path=tokenizer_path,
+                            num_workers=1,
+                            row_batch_rows=2,
+                            overwrite_output=False,
+                        )
                     )
-                )
 
     def test_run_add_token_count_fails_when_output_root_exists_and_overwrite_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -184,7 +173,7 @@ class AddTokenCountTests(unittest.TestCase):
             input_root = tmp_root / "near_dedup"
             output_root = tmp_root / "token_count_added"
             tokenizer_path = tmp_root / "tokenizer.json"
-            _write_test_tokenizer(tokenizer_path)
+            tokenizer_path.write_text("{}", encoding="utf-8")
             _write_input_shard(
                 input_root,
                 "part-000001.parquet",
@@ -203,16 +192,20 @@ class AddTokenCountTests(unittest.TestCase):
             (output_root / "existing.txt").write_text("already here", encoding="utf-8")
 
             with self.assertRaisesRegex(FileExistsError, "OVERWRITE_OUTPUT=True"):
-                add_token_count.run_add_token_count(
-                    add_token_count.AddTokenCountConfig(
-                        input_root=input_root,
-                        output_root=output_root,
-                        tokenizer_json_path=tokenizer_path,
-                        num_workers=1,
-                        row_batch_rows=2,
-                        overwrite_output=False,
+                with patch(
+                    "src.preprocess.add_token_count.common.get_tokenizer",
+                    return_value=_FakeTokenizer(),
+                ):
+                    add_token_count.run_add_token_count(
+                        add_token_count.AddTokenCountConfig(
+                            input_root=input_root,
+                            output_root=output_root,
+                            tokenizer_json_path=tokenizer_path,
+                            num_workers=1,
+                            row_batch_rows=2,
+                            overwrite_output=False,
+                        )
                     )
-                )
 
 
 if __name__ == "__main__":
