@@ -17,3 +17,4 @@ data/tokenizers
 weights/*
 main.py
 /noh
+.DS_Store
